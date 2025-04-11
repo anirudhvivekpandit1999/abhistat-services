@@ -1,0 +1,7 @@
+fastapi[standard]
+pandas
+numpy
+uvicorn
+pyarrow
+ipykernel
+numexpr

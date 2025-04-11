@@ -1,0 +1,6 @@
+# Python Dependencies
+__pycache__/
+*.pyc
+
+venv/
+temp_files/
