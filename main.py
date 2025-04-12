@@ -21,7 +21,7 @@ from typing import Optional, Dict
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel
-from utils import (
+from .utils import (
     read_file,
     get_unnamed_columns,
     get_mismatched_columns,
@@ -151,7 +151,6 @@ async def process_files(
         for col in df2.select_dtypes(include=[np.number]).columns:
             df2[col] = df2[col].round(3)
 
-        # Store DataFrames in memory
         session_data_store[session_id] = {
             "df1": df1,
             "df2": df2,
