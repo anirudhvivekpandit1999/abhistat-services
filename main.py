@@ -7,6 +7,8 @@ from fastapi import (
     Response,
     Depends,
     HTTPException,
+    Header,
+    Request,
 )
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,27 +19,37 @@ import uvicorn
 import shutil
 import re
 import numpy as np
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Union
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel
-from utils import (
+import logging
+import sys
+from .utils import (
     read_file,
     get_unnamed_columns,
     get_mismatched_columns,
     cleanup_expired_files_periodically,
 )
 
-
 TEMP_DIR = Path("./temp_files")
 TEMP_DIR.mkdir(exist_ok=True)
 
 session_data_store = {}
 
+class DependencyModelRequest(BaseModel):
+    dependent_variables: List[str]
+    independent_variables: List[str]
+    session_id: Optional[str] = None
 
 class CalculatedColumnRequest(BaseModel):
     formula: str
     column_name: str
+    formula_elements: List
+
+class BatchCalculatedColumnsRequest(BaseModel):
+    columns: List[CalculatedColumnRequest]
+    session_id: Optional[str] = None
 
 
 @asynccontextmanager
@@ -55,27 +67,70 @@ app = FastAPI(title="File Processor API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-async def get_session_data(session_id: Optional[str] = Cookie(None)):
-    if not session_id or session_id not in session_data_store:
+async def get_session_data(
+    request: Request,
+    session_id: Optional[str] = Cookie(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+):
+    """
+    Enhanced session data retrieval that accepts session ID from multiple sources:
+    1. Cookie
+    2. Custom header
+    3. Query parameter
+    4. Request body (for POST/PUT requests)
+    
+    Returns session data or raises HTTPException if no valid session found.
+    """
+    effective_session_id = None
+    
+    if session_id and session_id in session_data_store:
+        effective_session_id = session_id
+    
+    elif x_session_id and x_session_id in session_data_store:
+        effective_session_id = x_session_id
+    
+    if not effective_session_id:
+        query_session = request.query_params.get("session_id")
+        if query_session and query_session in session_data_store:
+            effective_session_id = query_session
+    
+    if not effective_session_id and request.method in ["POST", "PUT"]:
+        try:
+            body = await request.json()
+            body_session = body.get("session_id")
+            if body_session and body_session in session_data_store:
+                effective_session_id = body_session
+        except:
+            pass
+    
+    if not effective_session_id:
+        available_sessions = list(session_data_store.keys())
         raise HTTPException(
             status_code=401,
-            detail="Session not found or expired. Please upload files first.",
+            detail={
+                "error": "Session not found or expired. Please upload files first.",
+                "debug_info": {
+                    "cookie_session": session_id,
+                    "header_session": x_session_id,
+                    "available_sessions": available_sessions[:5] if available_sessions else [],
+                    "session_count": len(available_sessions)
+                }
+            }
         )
-    return session_data_store[session_id]
-
+    
+    return session_data_store[effective_session_id]
 
 @app.get("/")
 async def root():
     """Base route endpoint that returns a welcome message."""
     return {"message": "Welcome to the Abhitech Statistical Backend"}
-
 
 @app.post("/process-files/")
 async def process_files(
@@ -92,7 +147,15 @@ async def process_files(
     """
     if not session_id:
         session_id = str(uuid.uuid4())
-        response.set_cookie(key="session_id", value=session_id)
+        
+        # Set cookie with more permissive settings for development
+        response.set_cookie(
+            key="session_id", 
+            value=session_id,
+            httponly=False,  # Allow JavaScript access
+            samesite="lax",  # Less restrictive SameSite policy
+            max_age=3600     # 1 hour expiration
+        )
 
     session_dir = TEMP_DIR / session_id
     session_dir.mkdir(exist_ok=True)
@@ -160,21 +223,21 @@ async def process_files(
         }
 
         return {
-            "message": "Files processed successfully",
-            "session_id": session_id,
-            "file1_info": {
-                "filename": file1.filename,
-                "shape": df1.shape,
-                "columns": list(df1.columns),
-                "preview": df1.head(10).to_dict(orient="records"),
-            },
-            "file2_info": {
-                "filename": file2.filename,
-                "shape": df2.shape,
-                "columns": list(df2.columns),
-                "preview": df2.head(10).to_dict(orient="records"),
-            },
-        }
+        "message": "Files processed successfully",
+        "session_id": session_id,
+        "file1_info": {
+            "filename": file1.filename,
+            "shape": df1.shape,
+            "columns": list(df1.columns),
+            "preview": df1.head(10).to_dict(orient="records"),
+        },
+        "file2_info": {
+            "filename": file2.filename,
+            "shape": df2.shape,
+            "columns": list(df2.columns),
+            "preview": df2.head(10).to_dict(orient="records"),
+        },
+    }
 
     except Exception as e:
         if os.path.exists(temp_file1_path):
@@ -183,121 +246,215 @@ async def process_files(
             os.remove(temp_file2_path)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-@app.post("/add-calculated-column/")
-async def add_calculated_column(
-    request: CalculatedColumnRequest, session_data: Dict = Depends(get_session_data)
+@app.post("/save-calculated-columns/")
+async def save_calculated_columns(
+    request: Request,
+    data: BatchCalculatedColumnsRequest,
+    session_data: Dict = Depends(get_session_data)
 ):
     """
-    Add a calculated column to both DataFrames using the provided formula.
-    Uses session data from previous file processing.
+    Process multiple calculated columns at once and add them to both DataFrames.
+    Returns the newly added column names or validation errors.
     """
     try:
+        logging.info("Processing calculated columns request")
         df1 = session_data["df1"]
         df2 = session_data["df2"]
-        column_name = request.column_name
-        formula = request.formula
+        new_columns = []
+        errors = []
 
-        if not column_name or not re.match(r"^[a-zA-Z0-9_]+$", column_name):
+        for column_request in data.columns:
+            column_name = column_request.column_name
+            formula = column_request.formula
+            formula_elements = column_request.formula_elements
+            
+            # Replace column names in the formula using formula elements
+            for element in formula_elements:
+                if element["type"] == "column":
+                    column_value = element["value"]
+                    formula = formula.replace(column_value, f'[{column_value}]')
+                    
+            logging.info(f"Processing column: {column_name} with formula: {formula} and elements: {formula_elements}")
+                  
+            if not column_name or not re.match(r"^[a-zA-Z0-9_]+$", column_name):
+                error_message = f"Column name '{column_name}' can only contain letters, numbers and underscores"
+                logging.warning(error_message)
+                errors.append(error_message)
+                continue
+
+            if len(column_name) > 30:
+                error_message = f"Column name '{column_name}' is too long (max 30 characters)"
+                logging.warning(error_message)
+                errors.append(error_message)
+                continue
+
+            original_columns = set(df1.columns).intersection(set(df2.columns))
+            if column_name in original_columns:
+                error_message = f"Column name '{column_name}' already exists in the original dataset"
+                logging.warning(error_message)
+                errors.append(error_message)
+                continue
+            
+            validation_errors = validate_formula(formula, list(df1.columns))
+            if validation_errors:
+                for error in validation_errors:
+                    logging.warning(f"Validation error for '{column_name}': {error}")
+                    errors.append(f"Formula for '{column_name}': {error}")
+                continue
+
+        if errors:
+            logging.error(f"Validation errors encountered: {errors}")
             return JSONResponse(
                 status_code=400,
-                content={
-                    "error": "Column name can only contain letters, numbers and underscores"
-                },
+                content={"errors": errors}
             )
+            
+        current_columns = list(df1.columns)
+        processed_columns = []
 
-        if len(column_name) > 30:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Column name too long (max 30 characters)"},
-            )
+        for column_request in data.columns:
+            processed_formula = process_formula(formula, current_columns)
+            logging.info(f"Processed formula for '{column_name}': {processed_formula}")
 
-        if column_name in df1.columns or column_name in df2.columns:
-            return JSONResponse(
-                status_code=400, content={"error": "Column name already exists"}
-            )
+            try:    
+                # Initialize the column with NaN values before assigning the formula result
+                df1[column_name] = np.nan
+                df2[column_name] = np.nan
 
-        validation_errors = validate_formula(formula, list(df1.columns))
-        if validation_errors:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": f"Formula validation failed: {', '.join(validation_errors)}"
-                },
-            )
+                # Assign the evaluated formula result to the new column
+                df1[column_name] = eval(processed_formula, {"__builtins__": None}, {"df": df1, "np": np})
 
-        processed_formula = process_formula(formula, df1.columns)
+                df2[column_name] = eval(processed_formula, {"__builtins__": None}, {"df": df2, "np": np})
 
-        try:
-            df = df1
-            df1[column_name] = eval(processed_formula)
+                print("HERE")
+                
+                new_columns.append(column_name)
+                processed_columns.append({"name": column_name, "formula": formula})
+                
+                print(new_columns)
+                
+                current_columns = list(df1.columns)
+                logging.info(f"Successfully added column: {column_name}")
+                
+            except Exception as e:
+                logging.error(f"Error executing formula for '{column_name}': {str(e)}")
+                logging.exception("Traceback for the error:")
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                logging.error("Exception type: %s", exc_type)
+                logging.error("Exception value: %s", exc_value)
+                logging.error("Traceback details:", exc_info=(exc_type, exc_value, exc_traceback))
+                for col in new_columns:
+                    if col in df1.columns:
+                        df1.drop(columns=[col], inplace=True)
+                    if col in df2.columns:
+                        df2.drop(columns=[col], inplace=True)
+                
+                return JSONResponse(
+                    status_code=400, 
+                    content={"errors": [f"Error executing formula for '{column_name}': {str(e)}"]}
+                )
 
-            df = df2
-            df2[column_name] = eval(processed_formula)
+        session_data["df1"] = df1
+        session_data["df2"] = df2
+        session_data["calculated_columns"] = processed_columns
 
-            session_data["df1"] = df1
-            session_data["df2"] = df2
-
-            session_data["calculated_columns"].append(
-                {"name": column_name, "formula": formula}
-            )
-
-            return {
-                "message": f"Column '{column_name}' added successfully",
-                "preview": {
-                    "file1": df1[column_name].head(5).tolist(),
-                    "file2": df2[column_name].head(5).tolist(),
-                },
-                "calculated_columns": session_data["calculated_columns"],
+        logging.info(f"Successfully added {len(new_columns)} calculated columns")
+        return {
+            "message": f"Successfully added {len(new_columns)} calculated columns",
+            "new_columns": new_columns,
+            "preview": {
+                "file1": df1[new_columns].head(5).to_dict(orient="records") if new_columns else {},
+                "file2": df2[new_columns].head(5).to_dict(orient="records") if new_columns else {},
             }
-        except Exception as e:
-            return JSONResponse(
-                status_code=400, content={"error": f"Error executing formula: {str(e)}"}
-            )
+        }
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
+        logging.exception("An unexpected error occurred while processing calculated columns")
+        return JSONResponse(status_code=500, content={"errors": [str(e)]})
 
 def validate_formula(formula, available_columns):
     """
-    Validate the formula string for common errors.
-    Similar to the validation in the React component.
+    Enhanced validation function for formula string.
+    Synchronized with frontend validation rules.
     """
     errors = []
 
     if not formula:
         errors.append("Formula cannot be empty")
+        logging.warning("Formula validation failed: Formula cannot be empty")
         return errors
 
+    # Check for balanced parentheses
     stack = []
     for char in formula:
         if char == "(":
             stack.append("(")
         elif char == ")":
             if len(stack) == 0:
-                errors.append("Unbalanced parentheses - too many closing parentheses")
+                error_message = "Unbalanced parentheses - too many closing parentheses"
+                logging.warning(error_message)
+                errors.append(error_message)
                 break
             stack.pop()
 
     if stack:
-        errors.append("Unbalanced parentheses - missing closing parentheses")
+        error_message = "Unbalanced parentheses - missing closing parentheses"
+        logging.warning(error_message)
+        errors.append(error_message)
 
+    # Check for empty functions
     functions_regex = r"AVERAGE\(\s*\)|SUM\(\s*\)|MIN\(\s*\)|MAX\(\s*\)"
     if re.search(functions_regex, formula):
-        errors.append("Functions cannot be empty")
+        error_message = "Functions cannot be empty"
+        logging.warning(error_message)
+        errors.append(error_message)
 
+    # Check for division by zero
     division_by_zero_regex = r"/\s*0+(?!\d)"
     if re.search(division_by_zero_regex, formula):
-        errors.append("Division by zero is not allowed")
+        error_message = "Division by zero is not allowed"
+        logging.warning(error_message)
+        errors.append(error_message)
 
+    # Check for invalid column references
     column_refs = re.findall(r"\[([^\]]+)\]", formula)
     for col in column_refs:
         if col not in available_columns:
-            errors.append(f"Column '{col}' not found in dataset")
+            error_message = f"Column '{col}' not found in dataset"
+            logging.warning(error_message)
+            errors.append(error_message)
+
+    # Additional validations synchronized with frontend
+    if re.match(r'^\s*[+\-*/]\s*', formula):
+        error_message = "Formula should not start with an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
+
+    if re.search(r'[+\-*/]\s*$', formula):
+        error_message = "Formula should not end with an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
+
+    consecutive_operators_regex = r'[+\-*/]\s*[+\-*/]'
+    if re.search(consecutive_operators_regex, formula):
+        error_message = "Cannot have two consecutive operators"
+        logging.warning(error_message)
+        errors.append(error_message)
+
+    if re.search(r'\(\s*[+\-*/]', formula):
+        error_message = "An opening bracket cannot be followed directly by an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
+
+    if re.search(r'[+\-*/]\s*\)', formula):
+        error_message = "A closing bracket cannot be preceded directly by an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
 
     return errors
-
 
 def process_formula(formula, available_columns):
     """
@@ -305,16 +462,109 @@ def process_formula(formula, available_columns):
     Converts UI formula syntax to executable Python code.
     """
     processed = formula
-    for col in available_columns:
-        processed = processed.replace(f"[{col}]", f'df["{col}"]')
+    logging.info(f"Original formula: {formula}")
+    
+    # First replace column references that are already in the dataframe
+    processed = re.sub(r'\[([^\[\]]+)\]', lambda match: f'df["{match.group(1)}"]', formula)
 
-    processed = processed.replace("AVERAGE(", "np.mean([")
-    processed = processed.replace("SUM(", "np.sum([")
-    processed = processed.replace("MIN(", "np.min([")
-    processed = processed.replace("MAX(", "np.max([")
+    # Replace functions
+    # processed = processed.replace("AVERAGE(", "np.mean([")
+    # processed = processed.replace("SUM(", "np.sum([")
+    # processed = processed.replace("MIN(", "np.min([")
+    # processed = processed.replace("MAX(", "np.max([")
 
-    processed = processed.replace(")", "])")
-    return processed
+    # Close function parentheses
+    processed = re.sub(r'(\])(\s*,\s*\[)', r'\1,\2', processed)
+    processed = re.sub(r'\)(?!\]|\,|\))', "])", processed)
+    
+    logging.info(f"Processed formula: {processed}")
+    return processed  # Return the processed formula
+
+@app.get("/session-status/")
+async def session_status(
+    session_data: Optional[Dict] = Depends(get_session_data),
+    response: Response = None,
+):
+    """Diagnostic endpoint to check session status and data."""
+    if session_data:
+        return {
+            "status": "active",
+            "session_info": {
+                "file1_name": session_data.get("file1_name"),
+                "file2_name": session_data.get("file2_name"),
+                "columns_count": len(session_data.get("df1", {}).columns) if "df1" in session_data else 0,
+                "calculated_columns": len(session_data.get("calculated_columns", [])),
+            }
+        }
+    return {"status": "no_active_session"}
+
+
+@app.post("/save-dependency-model/")
+async def save_dependency_model(
+    request: Request,
+    data: DependencyModelRequest,
+    session_data: Dict = Depends(get_session_data)
+):
+    """
+    Save the dependency model (dependent and independent variables) to the session data
+    and return DataFrames ready for the next step of analysis.
+    """
+    try:
+        logging.info(f"Processing dependency model with dependent vars: {data.dependent_variables} and independent vars: {data.independent_variables}")
+        
+        df1 = session_data["df1"]
+        df2 = session_data["df2"]
+        file1_name = session_data["file1_name"]
+        file2_name = session_data["file2_name"]
+        
+        # Validate that all requested columns exist in the DataFrames
+        all_columns = set(df1.columns)
+        requested_columns = set(data.dependent_variables + data.independent_variables)
+        
+        missing_columns = requested_columns - all_columns
+        if missing_columns:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"The following columns were not found in the dataset: {', '.join(missing_columns)}"}
+            )
+        
+        # Store the dependency model in the session data
+        session_data["dependency_model"] = {
+            "dependent_variables": data.dependent_variables,
+            "independent_variables": data.independent_variables
+        }
+        
+        # Create aliases for better readability in the frontend
+        with_product_df = df1
+        without_product_df = df2
+        
+        # Return DataFrames info and model configuration
+        return {
+            "message": "Dependency model saved successfully",
+            "model_info": {
+                "dependent_variables": data.dependent_variables,
+                "independent_variables": data.independent_variables,
+            },
+            "data_info": {
+                "with_product": {
+                    "name": file1_name,
+                    "shape": with_product_df.shape,
+                    "preview": with_product_df[data.dependent_variables + data.independent_variables]
+                                .head(10).to_dict(orient="records"),
+                },
+                "without_product": {
+                    "name": file2_name,
+                    "shape": without_product_df.shape,
+                    "preview": without_product_df[data.dependent_variables + data.independent_variables]
+                                .head(10).to_dict(orient="records"),
+                },
+                "available_columns": list(all_columns),
+                "calculated_columns": [column["name"] for column in session_data.get("calculated_columns", [])],
+            }
+        }
+    except Exception as e:
+        logging.exception("An unexpected error occurred while processing dependency model")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 if __name__ == "__main__":
