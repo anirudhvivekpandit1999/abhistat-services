@@ -19,7 +19,7 @@ import uvicorn
 import shutil
 import re
 import numpy as np
-from typing import Optional, Dict, List, Union
+from typing import Optional, Dict, List
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel
@@ -30,10 +30,15 @@ from .utils import (
     get_unnamed_columns,
     get_mismatched_columns,
     cleanup_expired_files_periodically,
+    process_formula,
+    validate_formula
 )
 
 TEMP_DIR = Path("./temp_files")
 TEMP_DIR.mkdir(exist_ok=True)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 session_data_store = {}
 
@@ -88,30 +93,43 @@ async def get_session_data(
     
     Returns session data or raises HTTPException if no valid session found.
     """
+    logging.info("Starting session data retrieval process")
     effective_session_id = None
     
-    if session_id and session_id in session_data_store:
-        effective_session_id = session_id
+    if session_id:
+        logging.info(f"Checking session ID from cookie: {session_id}")
+        if session_id in session_data_store:
+            effective_session_id = session_id
+            logging.info(f"Session ID from cookie is valid: {effective_session_id}")
     
-    elif x_session_id and x_session_id in session_data_store:
-        effective_session_id = x_session_id
+    if not effective_session_id and x_session_id:
+        logging.info(f"Checking session ID from header: {x_session_id}")
+        if x_session_id in session_data_store:
+            effective_session_id = x_session_id
+            logging.info(f"Session ID from header is valid: {effective_session_id}")
     
     if not effective_session_id:
         query_session = request.query_params.get("session_id")
+        logging.info(f"Checking session ID from query parameters: {query_session}")
         if query_session and query_session in session_data_store:
             effective_session_id = query_session
+            logging.info(f"Session ID from query parameters is valid: {effective_session_id}")
     
     if not effective_session_id and request.method in ["POST", "PUT"]:
+        logging.info("Checking session ID from request body")
         try:
             body = await request.json()
             body_session = body.get("session_id")
             if body_session and body_session in session_data_store:
                 effective_session_id = body_session
-        except:
-            pass
+                logging.info(f"Session ID from request body is valid: {effective_session_id}")
+        except Exception as e:
+            logging.warning(f"Failed to parse session ID from request body: {str(e)}")
     
     if not effective_session_id:
+        logging.warning("No valid session ID found in any source")
         available_sessions = list(session_data_store.keys())
+        logging.info(f"Available sessions: {available_sessions[:5] if available_sessions else []}")
         raise HTTPException(
             status_code=401,
             detail={
@@ -125,12 +143,15 @@ async def get_session_data(
             }
         )
     
+    logging.info(f"Successfully retrieved session data for session ID: {effective_session_id}")
     return session_data_store[effective_session_id]
+
 
 @app.get("/")
 async def root():
     """Base route endpoint that returns a welcome message."""
     return {"message": "Welcome to the Abhitech Statistical Backend"}
+
 
 @app.post("/process-files/")
 async def process_files(
@@ -246,8 +267,6 @@ async def process_files(
             os.remove(temp_file2_path)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 @app.post("/save-calculated-columns/")
 async def save_calculated_columns(
@@ -374,111 +393,6 @@ async def save_calculated_columns(
     except Exception as e:
         logging.exception("An unexpected error occurred while processing calculated columns")
         return JSONResponse(status_code=500, content={"errors": [str(e)]})
-
-def validate_formula(formula, available_columns):
-    """
-    Enhanced validation function for formula string.
-    Synchronized with frontend validation rules.
-    """
-    errors = []
-
-    if not formula:
-        errors.append("Formula cannot be empty")
-        logging.warning("Formula validation failed: Formula cannot be empty")
-        return errors
-
-    # Check for balanced parentheses
-    stack = []
-    for char in formula:
-        if char == "(":
-            stack.append("(")
-        elif char == ")":
-            if len(stack) == 0:
-                error_message = "Unbalanced parentheses - too many closing parentheses"
-                logging.warning(error_message)
-                errors.append(error_message)
-                break
-            stack.pop()
-
-    if stack:
-        error_message = "Unbalanced parentheses - missing closing parentheses"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    # Check for empty functions
-    functions_regex = r"AVERAGE\(\s*\)|SUM\(\s*\)|MIN\(\s*\)|MAX\(\s*\)"
-    if re.search(functions_regex, formula):
-        error_message = "Functions cannot be empty"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    # Check for division by zero
-    division_by_zero_regex = r"/\s*0+(?!\d)"
-    if re.search(division_by_zero_regex, formula):
-        error_message = "Division by zero is not allowed"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    # Check for invalid column references
-    column_refs = re.findall(r"\[([^\]]+)\]", formula)
-    for col in column_refs:
-        if col not in available_columns:
-            error_message = f"Column '{col}' not found in dataset"
-            logging.warning(error_message)
-            errors.append(error_message)
-
-    # Additional validations synchronized with frontend
-    if re.match(r'^\s*[+\-*/]\s*', formula):
-        error_message = "Formula should not start with an operator"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    if re.search(r'[+\-*/]\s*$', formula):
-        error_message = "Formula should not end with an operator"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    consecutive_operators_regex = r'[+\-*/]\s*[+\-*/]'
-    if re.search(consecutive_operators_regex, formula):
-        error_message = "Cannot have two consecutive operators"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    if re.search(r'\(\s*[+\-*/]', formula):
-        error_message = "An opening bracket cannot be followed directly by an operator"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    if re.search(r'[+\-*/]\s*\)', formula):
-        error_message = "A closing bracket cannot be preceded directly by an operator"
-        logging.warning(error_message)
-        errors.append(error_message)
-
-    return errors
-
-def process_formula(formula, available_columns):
-    """
-    Process the formula to make it executable in Python/Pandas context.
-    Converts UI formula syntax to executable Python code.
-    """
-    processed = formula
-    logging.info(f"Original formula: {formula}")
-    
-    # First replace column references that are already in the dataframe
-    processed = re.sub(r'\[([^\[\]]+)\]', lambda match: f'df["{match.group(1)}"]', formula)
-
-    # Replace functions
-    # processed = processed.replace("AVERAGE(", "np.mean([")
-    # processed = processed.replace("SUM(", "np.sum([")
-    # processed = processed.replace("MIN(", "np.min([")
-    # processed = processed.replace("MAX(", "np.max([")
-
-    # Close function parentheses
-    processed = re.sub(r'(\])(\s*,\s*\[)', r'\1,\2', processed)
-    processed = re.sub(r'\)(?!\]|\,|\))', "])", processed)
-    
-    logging.info(f"Processed formula: {processed}")
-    return processed  # Return the processed formula
 
 @app.get("/session-status/")
 async def session_status(

@@ -6,11 +6,15 @@ from datetime import datetime, timedelta
 import asyncio
 from pathlib import Path
 import numexpr as ne
+import re
+import logging
 
 
 TEMP_DIR = Path("./temp_files")
+FILE_EXPIRATION = 7200
 
-FILE_EXPIRATION = 3600
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def read_file(file: UploadFile) -> pd.DataFrame:
@@ -85,117 +89,108 @@ async def cleanup_expired_files_periodically():
         await asyncio.sleep(300)
 
 
-def apply_formula(
-    withProductdf: pd.DataFrame,
-    withoutProductdf: pd.DataFrame,
-    formula: str,
-    newCol: str,
-) -> list:
+def validate_formula(formula, available_columns):
     """
-    Apply a formula to DataFrames and return the column names used in the formula.
-
-    Args:
-        withProductdf: DataFrame with product data
-        withoutProductdf: DataFrame without product data
-        formula: Mathematical formula to apply (can use AVG, SUM, MIN, MAX or custom expressions)
-        newCol: Name of the new column to create
-
-    Returns:
-        List of column names used in the formula
+    Enhanced validation function for formula string.
+    Synchronized with frontend validation rules.
     """
-    try:
-        if any(func in formula.upper() for func in ["AVG(", "SUM(", "MIN(", "MAX("]):
-            function_name = formula.split("(")[0].upper()
-            column_names = formula.split("(")[1].split(")")[0].split(",")
-            column_names = [col.strip() for col in column_names]
-            column_names = [col.strip("[").strip("]") for col in column_names]
+    errors = []
 
-            if not all(col in withProductdf.columns for col in column_names):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Column names in the formula are not present in the withProductdf dataframe.",
-                )
+    if not formula:
+        errors.append("Formula cannot be empty")
+        logging.warning("Formula validation failed: Formula cannot be empty")
+        return errors
 
-            if not all(col in withoutProductdf.columns for col in column_names):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Column names in the formula are not present in the withoutProductdf dataframe.",
-                )
+    # Check for balanced parentheses
+    stack = []
+    for char in formula:
+        if char == "(":
+            stack.append("(")
+        elif char == ")":
+            if len(stack) == 0:
+                error_message = "Unbalanced parentheses - too many closing parentheses"
+                logging.warning(error_message)
+                errors.append(error_message)
+                break
+            stack.pop()
 
-            if function_name == "AVG":
-                withProductdf[newCol] = withProductdf[column_names].mean(axis=1)
-                withoutProductdf[newCol] = withoutProductdf[column_names].mean(axis=1)
+    if stack:
+        error_message = "Unbalanced parentheses - missing closing parentheses"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            elif function_name == "SUM":
-                withProductdf[newCol] = withProductdf[column_names].sum(axis=1)
-                withoutProductdf[newCol] = withoutProductdf[column_names].sum(axis=1)
+    # Check for empty functions
+    functions_regex = r"AVERAGE\(\s*\)|SUM\(\s*\)|MIN\(\s*\)|MAX\(\s*\)"
+    if re.search(functions_regex, formula):
+        error_message = "Functions cannot be empty"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            elif function_name == "MIN":
-                withProductdf[newCol] = withProductdf[column_names].min(axis=1)
-                withoutProductdf[newCol] = withoutProductdf[column_names].min(axis=1)
+    # Check for division by zero
+    division_by_zero_regex = r"/\s*0+(?!\d)"
+    if re.search(division_by_zero_regex, formula):
+        error_message = "Division by zero is not allowed"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            elif function_name == "MAX":
-                withProductdf[newCol] = withProductdf[column_names].max(axis=1)
-                withoutProductdf[newCol] = withoutProductdf[column_names].max(axis=1)
+    # Check for invalid column references
+    column_refs = re.findall(r"\[([^\]]+)\]", formula)
+    for col in column_refs:
+        if col not in available_columns:
+            error_message = f"Column '{col}' not found in dataset"
+            logging.warning(error_message)
+            errors.append(error_message)
 
-            return column_names
+    # Additional validations synchronized with frontend
+    if re.match(r'^\s*[+\-*/]\s*', formula):
+        error_message = "Formula should not start with an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-        else:
-            import re
+    if re.search(r'[+\-*/]\s*$', formula):
+        error_message = "Formula should not end with an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            column_names = re.findall(r"\[(.*?)\]", formula)
+    consecutive_operators_regex = r'[+\-*/]\s*[+\-*/]'
+    if re.search(consecutive_operators_regex, formula):
+        error_message = "Cannot have two consecutive operators"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            col_mapping = {}
-            for col in column_names:
-                safe_name = f"col_{len(col_mapping)}"
-                col_mapping[col] = safe_name
+    if re.search(r'\(\s*[+\-*/]', formula):
+        error_message = "An opening bracket cannot be followed directly by an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            for original_col in col_mapping.keys():
-                if original_col not in withProductdf.columns:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Column '{original_col}' from the formula is not present in the withProductdf dataframe.",
-                    )
-                if original_col not in withoutProductdf.columns:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Column '{original_col}' from the formula is not present in the withoutProductdf dataframe.",
-                    )
+    if re.search(r'[+\-*/]\s*\)', formula):
+        error_message = "A closing bracket cannot be preceded directly by an operator"
+        logging.warning(error_message)
+        errors.append(error_message)
 
-            working_formula = formula
+    return errors
 
-            try:
-                wp_col_values = {}
-                for original_col, safe_name in col_mapping.items():
-                    wp_col_values[safe_name] = withProductdf[original_col].values
 
-                for original_col, safe_name in col_mapping.items():
-                    working_formula = working_formula.replace(
-                        f"[{original_col}]", safe_name
-                    )
+def process_formula(formula, available_columns):
+    """
+    Process the formula to make it executable in Python/Pandas context.
+    Converts UI formula syntax to executable Python code.
+    """
+    processed = formula
+    logging.info(f"Original formula: {formula}")
+    
+    # First replace column references that are already in the dataframe
+    processed = re.sub(r'\[([^\[\]]+)\]', lambda match: f'df["{match.group(1)}"]', formula)
 
-                wp_result = ne.evaluate(working_formula, local_dict=wp_col_values)
-                withProductdf[newCol] = wp_result
-            except Exception as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Error evaluating expression for withProductdf: {e}. Please check your formula syntax.",
-                )
+    # Replace functions
+    # processed = processed.replace("AVERAGE(", "np.mean([")
+    # processed = processed.replace("SUM(", "np.sum([")
+    # processed = processed.replace("MIN(", "np.min([")
+    # processed = processed.replace("MAX(", "np.max([")
 
-            try:
-                wo_col_values = {}
-                for original_col, safe_name in col_mapping.items():
-                    wo_col_values[safe_name] = withoutProductdf[original_col].values
-
-                wo_result = ne.evaluate(working_formula, local_dict=wo_col_values)
-                withoutProductdf[newCol] = wo_result
-            except Exception as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Error evaluating expression for withoutProductdf: {e}. Please check your formula syntax.",
-                )
-
-            return list(col_mapping.keys())
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error applying formula: {e}")
+    # Close function parentheses
+    processed = re.sub(r'(\])(\s*,\s*\[)', r'\1,\2', processed)
+    processed = re.sub(r'\)(?!\]|\,|\))', "])", processed)
+    
+    logging.info(f"Processed formula: {processed}")
+    return processed  # Return the processed formula
