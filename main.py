@@ -25,7 +25,7 @@ from pathlib import Path
 from pydantic import BaseModel
 import logging
 import sys
-from .utils import (
+from utils import (
     read_file,
     get_unnamed_columns,
     get_mismatched_columns,
