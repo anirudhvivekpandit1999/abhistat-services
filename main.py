@@ -166,8 +166,11 @@ async def process_files(
     Process two files (CSV, Excel, or Parquet) and handle unnamed and mismatched columns.
     Uses session cookies to manage multiple users without authentication.
     """
+    logging.info("Starting file processing")
+    
     if not session_id:
         session_id = str(uuid.uuid4())
+        logging.info(f"Generated new session ID: {session_id}")
         
         # Set cookie with more permissive settings for development
         response.set_cookie(
@@ -177,26 +180,35 @@ async def process_files(
             samesite="lax",  # Less restrictive SameSite policy
             max_age=3600     # 1 hour expiration
         )
+        logging.info("Session ID cookie set successfully")
 
     session_dir = TEMP_DIR / session_id
     session_dir.mkdir(exist_ok=True)
+    logging.info(f"Session directory created: {session_dir}")
 
     temp_file1_path = session_dir / f"file1_{uuid.uuid4()}_{file1.filename}"
     temp_file2_path = session_dir / f"file2_{uuid.uuid4()}_{file2.filename}"
+    logging.info(f"Temporary file paths created: {temp_file1_path}, {temp_file2_path}")
 
     try:
+        logging.info(f"Saving uploaded files to temporary paths")
         with open(temp_file1_path, "wb") as buffer:
             shutil.copyfileobj(file1.file, buffer)
+        logging.info(f"File 1 saved: {temp_file1_path}")
 
         with open(temp_file2_path, "wb") as buffer:
             shutil.copyfileobj(file2.file, buffer)
+        logging.info(f"File 2 saved: {temp_file2_path}")
 
         file1.file.seek(0)
         file2.file.seek(0)
 
+        logging.info("Reading files into DataFrames")
         df1 = read_file(file1)
         df2 = read_file(file2)
+        logging.info(f"Files read successfully: {file1.filename}, {file2.filename}")
 
+        logging.info("Checking for unnamed columns")
         unnamed_cols_df1 = get_unnamed_columns(df1)
         unnamed_cols_df2 = get_unnamed_columns(df2)
 
@@ -206,12 +218,16 @@ async def process_files(
                 error_message += f"File '{file1.filename}' has unnamed columns at indexes {unnamed_cols_df1}. "
             if unnamed_cols_df2:
                 error_message += f"File '{file2.filename}' has unnamed columns at indexes {unnamed_cols_df2}."
+            logging.warning(error_message)
             return JSONResponse(status_code=400, content={"error": error_message})
 
         if remove_unnamed:
+            logging.info("Removing unnamed columns from DataFrames")
             df1 = df1.loc[:, ~df1.columns.str.contains("^Unnamed")]
             df2 = df2.loc[:, ~df2.columns.str.contains("^Unnamed")]
+            logging.info("Unnamed columns removed successfully")
 
+        logging.info("Checking for mismatched columns")
         mismatched_cols = get_mismatched_columns(df1, df2)
 
         if (
@@ -222,19 +238,24 @@ async def process_files(
                 error_message += f"Columns only in '{file1.filename}': {mismatched_cols['only_in_df1']}. "
             if mismatched_cols["only_in_df2"]:
                 error_message += f"Columns only in '{file2.filename}': {mismatched_cols['only_in_df2']}."
-
+            logging.warning(error_message)
             return JSONResponse(status_code=400, content={"error": error_message})
 
         if remove_mismatched:
+            logging.info("Removing mismatched columns from DataFrames")
             common_columns = list(set(df1.columns) & set(df2.columns))
             df1 = df1[common_columns]
             df2 = df2[common_columns]
+            logging.info("Mismatched columns removed successfully")
 
+        logging.info("Rounding numeric columns to 3 decimal places")
         for col in df1.select_dtypes(include=[np.number]).columns:
             df1[col] = df1[col].round(3)
         for col in df2.select_dtypes(include=[np.number]).columns:
             df2[col] = df2[col].round(3)
+        logging.info("Numeric columns rounded successfully")
 
+        logging.info("Storing session data")
         session_data_store[session_id] = {
             "df1": df1,
             "df2": df2,
@@ -242,31 +263,35 @@ async def process_files(
             "file2_name": file2.filename,
             "calculated_columns": [],
         }
+        logging.info(f"Session data stored successfully for session ID: {session_id}")
 
+        logging.info("Returning processed file information")
         return {
-        "message": "Files processed successfully",
-        "session_id": session_id,
-        "file1_info": {
-            "filename": file1.filename,
-            "shape": df1.shape,
-            "columns": list(df1.columns),
-            "preview": df1.head(10).to_dict(orient="records"),
-        },
-        "file2_info": {
-            "filename": file2.filename,
-            "shape": df2.shape,
-            "columns": list(df2.columns),
-            "preview": df2.head(10).to_dict(orient="records"),
-        },
-    }
+            "message": "Files processed successfully",
+            "session_id": session_id,
+            "file1_info": {
+                "filename": file1.filename,
+                "shape": df1.shape,
+                "columns": list(df1.columns),
+                "preview": df1.head(10).to_dict(orient="records"),
+            },
+            "file2_info": {
+                "filename": file2.filename,
+                "shape": df2.shape,
+                "columns": list(df2.columns),
+                "preview": df2.head(10).to_dict(orient="records"),
+            },
+        }
 
     except Exception as e:
+        logging.error(f"An error occurred during file processing: {str(e)}")
         if os.path.exists(temp_file1_path):
             os.remove(temp_file1_path)
+            logging.info(f"Temporary file 1 deleted: {temp_file1_path}")
         if os.path.exists(temp_file2_path):
             os.remove(temp_file2_path)
+            logging.info(f"Temporary file 2 deleted: {temp_file2_path}")
         return JSONResponse(status_code=500, content={"error": str(e)})
-
 
 @app.post("/save-calculated-columns/")
 async def save_calculated_columns(
