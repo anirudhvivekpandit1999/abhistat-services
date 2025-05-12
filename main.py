@@ -25,7 +25,7 @@ from pathlib import Path
 from pydantic import BaseModel
 import logging
 import sys
-from utils import (
+from .utils import (
     read_file,
     get_unnamed_columns,
     get_mismatched_columns,
@@ -446,13 +446,13 @@ async def save_dependency_model(
 ):
     """
     Save the dependency model (dependent and independent variables) to the session data
-    and return DataFrames ready for the next step of analysis.
+    and return complete DataFrames for the next step of analysis.
     """
     try:
         logging.info(f"Processing dependency model with dependent vars: {data.dependent_variables} and independent vars: {data.independent_variables}")
         
-        df1 = session_data["df1"]
-        df2 = session_data["df2"]
+        df1 = session_data["df1"].copy()
+        df2 = session_data["df2"].copy()
         file1_name = session_data["file1_name"]
         file2_name = session_data["file2_name"]
         
@@ -477,7 +477,12 @@ async def save_dependency_model(
         with_product_df = df1
         without_product_df = df2
         
-        # Return DataFrames info and model configuration
+        # Handle NaN values in both DataFrames by replacing them with None (which becomes null in JSON)
+        # This prevents "Out of range float values are not JSON compliant" errors
+        with_product_df = with_product_df.replace({np.nan: None})
+        without_product_df = without_product_df.replace({np.nan: None})
+        
+        # Return full DataFrames info and model configuration
         return {
             "message": "Dependency model saved successfully",
             "model_info": {
@@ -488,14 +493,12 @@ async def save_dependency_model(
                 "with_product": {
                     "name": file1_name,
                     "shape": with_product_df.shape,
-                    "preview": with_product_df[data.dependent_variables + data.independent_variables]
-                                .head(10).to_dict(orient="records"),
+                    "data": with_product_df.to_dict(orient="records"),
                 },
                 "without_product": {
                     "name": file2_name,
                     "shape": without_product_df.shape,
-                    "preview": without_product_df[data.dependent_variables + data.independent_variables]
-                                .head(10).to_dict(orient="records"),
+                    "data": without_product_df.to_dict(orient="records"),
                 },
                 "available_columns": list(all_columns),
                 "calculated_columns": [column["name"] for column in session_data.get("calculated_columns", [])],
