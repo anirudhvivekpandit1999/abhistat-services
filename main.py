@@ -446,7 +446,7 @@ async def save_dependency_model(
 ):
     """
     Save the dependency model (dependent and independent variables) to the session data
-    and return complete DataFrames for the next step of analysis.
+    and return complete DataFrames for the next step of analysis, including bootstrapping statistics.
     """
     try:
         logging.info(f"Processing dependency model with dependent vars: {data.dependent_variables} and independent vars: {data.independent_variables}")
@@ -482,7 +482,31 @@ async def save_dependency_model(
         with_product_df = with_product_df.replace({np.nan: None})
         without_product_df = without_product_df.replace({np.nan: None})
         
-        # Return full DataFrames info and model configuration
+        # Calculate bootstrapping statistics for each column in both DataFrames
+        def bootstrap_statistics(column):
+            """Calculate bootstrapping statistics for a given column."""
+            if column.dtype in [np.float64, np.int64]:  # Only calculate for numeric columns
+                samples = [column.sample(frac=1, replace=True).mean() for _ in range(1000)]
+                return {
+                    "mean": np.mean(samples),
+                    "std_dev": np.std(samples),
+                    "confidence_interval": (np.percentile(samples, 2.5), np.percentile(samples, 97.5))
+                }
+            return None
+
+        bootstrap_stats_with_product = {
+            col: bootstrap_statistics(with_product_df[col])
+            for col in with_product_df.columns
+            if with_product_df[col].dtype in [np.float64, np.int64]
+        }
+
+        bootstrap_stats_without_product = {
+            col: bootstrap_statistics(without_product_df[col])
+            for col in without_product_df.columns
+            if without_product_df[col].dtype in [np.float64, np.int64]
+        }
+        
+        # Return full DataFrames info, model configuration, and bootstrapping statistics
         return {
             "message": "Dependency model saved successfully",
             "model_info": {
@@ -502,6 +526,10 @@ async def save_dependency_model(
                 },
                 "available_columns": list(all_columns),
                 "calculated_columns": [column["name"] for column in session_data.get("calculated_columns", [])],
+            },
+            "bootstrap_statistics": {
+                "with_product": bootstrap_stats_with_product,
+                "without_product": bootstrap_stats_without_product,
             }
         }
     except Exception as e:
