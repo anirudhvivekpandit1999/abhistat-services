@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 import os
 import uuid
 import uvicorn
+import pandas as pd
 import shutil
 import re
 import numpy as np
@@ -25,7 +26,7 @@ from pathlib import Path
 from pydantic import BaseModel
 import logging
 import sys
-from utils import (
+from .utils import (
     read_file,
     get_unnamed_columns,
     get_mismatched_columns,
@@ -37,7 +38,6 @@ from utils import (
 TEMP_DIR = Path("./temp_files")
 TEMP_DIR.mkdir(exist_ok=True)
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 session_data_store = {}
@@ -72,7 +72,7 @@ app = FastAPI(title="File Processor API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,39 +84,23 @@ async def get_session_data(
     session_id: Optional[str] = Cookie(None),
     x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ):
-    """
-    Enhanced session data retrieval that accepts session ID from multiple sources:
-    1. Cookie
-    2. Custom header
-    3. Query parameter
-    4. Request body (for POST/PUT requests)
-    
-    Returns session data or raises HTTPException if no valid session found.
-    """
     logging.info("Starting session data retrieval process")
     effective_session_id = None
     
-    if session_id:
-        logging.info(f"Checking session ID from cookie: {session_id}")
-        if session_id in session_data_store:
-            effective_session_id = session_id
-            logging.info(f"Session ID from cookie is valid: {effective_session_id}")
+    if session_id and session_id in session_data_store:
+        effective_session_id = session_id
+        logging.info(f"Session ID from cookie is valid: {effective_session_id}")
     
-    if not effective_session_id and x_session_id:
-        logging.info(f"Checking session ID from header: {x_session_id}")
-        if x_session_id in session_data_store:
-            effective_session_id = x_session_id
-            logging.info(f"Session ID from header is valid: {effective_session_id}")
+    if not effective_session_id and x_session_id and x_session_id in session_data_store:
+        effective_session_id = x_session_id
+        logging.info(f"Session ID from header is valid: {effective_session_id}")
     
-    if not effective_session_id:
-        query_session = request.query_params.get("session_id")
-        logging.info(f"Checking session ID from query parameters: {query_session}")
-        if query_session and query_session in session_data_store:
-            effective_session_id = query_session
-            logging.info(f"Session ID from query parameters is valid: {effective_session_id}")
+    query_session = request.query_params.get("session_id")
+    if not effective_session_id and query_session and query_session in session_data_store:
+        effective_session_id = query_session
+        logging.info(f"Session ID from query parameters is valid: {effective_session_id}")
     
     if not effective_session_id and request.method in ["POST", "PUT"]:
-        logging.info("Checking session ID from request body")
         try:
             body = await request.json()
             body_session = body.get("session_id")
@@ -127,9 +111,8 @@ async def get_session_data(
             logging.warning(f"Failed to parse session ID from request body: {str(e)}")
     
     if not effective_session_id:
-        logging.warning("No valid session ID found in any source")
         available_sessions = list(session_data_store.keys())
-        logging.info(f"Available sessions: {available_sessions[:5] if available_sessions else []}")
+        logging.warning("No valid session ID found in any source")
         raise HTTPException(
             status_code=401,
             detail={
@@ -149,7 +132,6 @@ async def get_session_data(
 
 @app.get("/")
 async def root():
-    """Base route endpoint that returns a welcome message."""
     return {"message": "Welcome to the Abhitech Statistical Backend"}
 
 
@@ -162,23 +144,18 @@ async def process_files(
     session_id: Optional[str] = Cookie(None),
     response: Response = None,
 ):
-    """
-    Process two files (CSV, Excel, or Parquet) and handle unnamed and mismatched columns.
-    Uses session cookies to manage multiple users without authentication.
-    """
     logging.info("Starting file processing")
     
     if not session_id:
         session_id = str(uuid.uuid4())
         logging.info(f"Generated new session ID: {session_id}")
         
-        # Set cookie with more permissive settings for development
         response.set_cookie(
             key="session_id", 
             value=session_id,
-            httponly=False,  # Allow JavaScript access
-            samesite="lax",  # Less restrictive SameSite policy
-            max_age=3600     # 1 hour expiration
+            httponly=False,
+            samesite="lax",
+            max_age=86400
         )
         logging.info("Session ID cookie set successfully")
 
@@ -191,7 +168,6 @@ async def process_files(
     logging.info(f"Temporary file paths created: {temp_file1_path}, {temp_file2_path}")
 
     try:
-        logging.info(f"Saving uploaded files to temporary paths")
         with open(temp_file1_path, "wb") as buffer:
             shutil.copyfileobj(file1.file, buffer)
         logging.info(f"File 1 saved: {temp_file1_path}")
@@ -208,7 +184,6 @@ async def process_files(
         df2 = read_file(file2)
         logging.info(f"Files read successfully: {file1.filename}, {file2.filename}")
 
-        logging.info("Checking for unnamed columns")
         unnamed_cols_df1 = get_unnamed_columns(df1)
         unnamed_cols_df2 = get_unnamed_columns(df2)
 
@@ -222,12 +197,10 @@ async def process_files(
             return JSONResponse(status_code=400, content={"error": error_message})
 
         if remove_unnamed:
-            logging.info("Removing unnamed columns from DataFrames")
             df1 = df1.loc[:, ~df1.columns.str.contains("^Unnamed")]
             df2 = df2.loc[:, ~df2.columns.str.contains("^Unnamed")]
             logging.info("Unnamed columns removed successfully")
 
-        logging.info("Checking for mismatched columns")
         mismatched_cols = get_mismatched_columns(df1, df2)
 
         if (
@@ -242,20 +215,20 @@ async def process_files(
             return JSONResponse(status_code=400, content={"error": error_message})
 
         if remove_mismatched:
-            logging.info("Removing mismatched columns from DataFrames")
             common_columns = list(set(df1.columns) & set(df2.columns))
             df1 = df1[common_columns]
             df2 = df2[common_columns]
             logging.info("Mismatched columns removed successfully")
 
-        logging.info("Rounding numeric columns to 3 decimal places")
-        for col in df1.select_dtypes(include=[np.number]).columns:
-            df1[col] = df1[col].round(3)
-        for col in df2.select_dtypes(include=[np.number]).columns:
-            df2[col] = df2[col].round(3)
+        numeric_cols_df1 = df1.select_dtypes(include=[np.number]).columns
+        numeric_cols_df2 = df2.select_dtypes(include=[np.number]).columns
+        
+        if not numeric_cols_df1.empty:
+            df1[numeric_cols_df1] = df1[numeric_cols_df1].round(3)
+        if not numeric_cols_df2.empty:
+            df2[numeric_cols_df2] = df2[numeric_cols_df2].round(3)
         logging.info("Numeric columns rounded successfully")
 
-        logging.info("Storing session data")
         session_data_store[session_id] = {
             "df1": df1,
             "df2": df2,
@@ -265,7 +238,6 @@ async def process_files(
         }
         logging.info(f"Session data stored successfully for session ID: {session_id}")
 
-        logging.info("Returning processed file information")
         return {
             "message": "Files processed successfully",
             "session_id": session_id,
@@ -287,10 +259,8 @@ async def process_files(
         logging.error(f"An error occurred during file processing: {str(e)}")
         if os.path.exists(temp_file1_path):
             os.remove(temp_file1_path)
-            logging.info(f"Temporary file 1 deleted: {temp_file1_path}")
         if os.path.exists(temp_file2_path):
             os.remove(temp_file2_path)
-            logging.info(f"Temporary file 2 deleted: {temp_file2_path}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/save-calculated-columns/")
@@ -299,10 +269,6 @@ async def save_calculated_columns(
     data: BatchCalculatedColumnsRequest,
     session_data: Dict = Depends(get_session_data)
 ):
-    """
-    Process multiple calculated columns at once and add them to both DataFrames.
-    Returns the newly added column names or validation errors.
-    """
     try:
         logging.info("Processing calculated columns request")
         df1 = session_data["df1"]
@@ -315,38 +281,37 @@ async def save_calculated_columns(
             formula = column_request.formula
             formula_elements = column_request.formula_elements
             
-            # Replace column names in the formula using formula elements
             for element in formula_elements:
                 if element["type"] == "column":
                     column_value = element["value"]
                     formula = formula.replace(column_value, f'[{column_value}]')
                     
-            logging.info(f"Processing column: {column_name} with formula: {formula} and elements: {formula_elements}")
+            logging.info(f"Processing column: {column_name} with formula: {formula}")
                   
             if not column_name or not re.match(r"^[a-zA-Z0-9_]+$", column_name):
-                error_message = f"Column name '{column_name}' can only contain letters, numbers and underscores"
-                logging.warning(error_message)
-                errors.append(error_message)
+                errors.append(f"Column name '{column_name}' can only contain letters, numbers and underscores")
                 continue
 
             if len(column_name) > 30:
-                error_message = f"Column name '{column_name}' is too long (max 30 characters)"
-                logging.warning(error_message)
-                errors.append(error_message)
+                errors.append(f"Column name '{column_name}' is too long (max 30 characters)")
                 continue
 
             original_columns = set(df1.columns).intersection(set(df2.columns))
             if column_name in original_columns:
-                error_message = f"Column name '{column_name}' already exists in the original dataset"
-                logging.warning(error_message)
-                errors.append(error_message)
+                errors.append(f"Column name '{column_name}' already exists in the original dataset")
                 continue
             
-            validation_errors = validate_formula(formula, list(df1.columns))
-            if validation_errors:
-                for error in validation_errors:
-                    logging.warning(f"Validation error for '{column_name}': {error}")
-                    errors.append(f"Formula for '{column_name}': {error}")
+            validation_errors_df1 = validate_formula(formula, list(df1.columns))
+            validation_errors_df2 = validate_formula(formula, list(df2.columns))
+            
+            if validation_errors_df1:
+                for error in validation_errors_df1:
+                    errors.append(f"Formula for '{column_name}' in first dataset: {error}")
+                continue
+                
+            if validation_errors_df2:
+                for error in validation_errors_df2:
+                    errors.append(f"Formula for '{column_name}' in second dataset: {error}")
                 continue
 
         if errors:
@@ -356,40 +321,29 @@ async def save_calculated_columns(
                 content={"errors": errors}
             )
             
-        current_columns = list(df1.columns)
         processed_columns = []
 
         for column_request in data.columns:
-            processed_formula = process_formula(formula, current_columns)
+            
+            processed_formula = process_formula(formula)
             logging.info(f"Processed formula for '{column_name}': {processed_formula}")
 
             try:    
-                # Initialize the column with NaN values before assigning the formula result
                 df1[column_name] = np.nan
                 df2[column_name] = np.nan
 
-                # Assign the evaluated formula result to the new column
                 df1[column_name] = eval(processed_formula, {"__builtins__": None}, {"df": df1, "np": np})
-
                 df2[column_name] = eval(processed_formula, {"__builtins__": None}, {"df": df2, "np": np})
-
-                print("HERE")
                 
                 new_columns.append(column_name)
                 processed_columns.append({"name": column_name, "formula": formula})
-                
-                print(new_columns)
-                
-                current_columns = list(df1.columns)
+
                 logging.info(f"Successfully added column: {column_name}")
                 
             except Exception as e:
                 logging.error(f"Error executing formula for '{column_name}': {str(e)}")
                 logging.exception("Traceback for the error:")
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                logging.error("Exception type: %s", exc_type)
-                logging.error("Exception value: %s", exc_value)
-                logging.error("Traceback details:", exc_info=(exc_type, exc_value, exc_traceback))
+                
                 for col in new_columns:
                     if col in df1.columns:
                         df1.drop(columns=[col], inplace=True)
@@ -422,32 +376,24 @@ async def save_calculated_columns(
 @app.get("/session-status/")
 async def session_status(
     session_data: Optional[Dict] = Depends(get_session_data),
-    response: Response = None,
 ):
-    """Diagnostic endpoint to check session status and data."""
     if session_data:
         return {
             "status": "active",
             "session_info": {
                 "file1_name": session_data.get("file1_name"),
                 "file2_name": session_data.get("file2_name"),
-                "columns_count": len(session_data.get("df1", {}).columns) if "df1" in session_data else 0,
+                "columns_count": len(session_data.get("df1", pd.DataFrame()).columns) if "df1" in session_data else 0,
                 "calculated_columns": len(session_data.get("calculated_columns", [])),
             }
         }
     return {"status": "no_active_session"}
 
-
 @app.post("/save-dependency-model/")
 async def save_dependency_model(
-    request: Request,
     data: DependencyModelRequest,
     session_data: Dict = Depends(get_session_data)
 ):
-    """
-    Save the dependency model (dependent and independent variables) to the session data
-    and return complete DataFrames for the next step of analysis, including bootstrapping statistics.
-    """
     try:
         logging.info(f"Processing dependency model with dependent vars: {data.dependent_variables} and independent vars: {data.independent_variables}")
         
@@ -456,7 +402,6 @@ async def save_dependency_model(
         file1_name = session_data["file1_name"]
         file2_name = session_data["file2_name"]
         
-        # Validate that all requested columns exist in the DataFrames
         all_columns = set(df1.columns)
         requested_columns = set(data.dependent_variables + data.independent_variables)
         
@@ -467,46 +412,73 @@ async def save_dependency_model(
                 content={"error": f"The following columns were not found in the dataset: {', '.join(missing_columns)}"}
             )
         
-        # Store the dependency model in the session data
         session_data["dependency_model"] = {
             "dependent_variables": data.dependent_variables,
             "independent_variables": data.independent_variables
         }
         
-        # Create aliases for better readability in the frontend
         with_product_df = df1
         without_product_df = df2
-        
-        # Handle NaN values in both DataFrames by replacing them with None (which becomes null in JSON)
-        # This prevents "Out of range float values are not JSON compliant" errors
-        with_product_df = with_product_df.replace({np.nan: None})
-        without_product_df = without_product_df.replace({np.nan: None})
-        
-        # Calculate bootstrapping statistics for each column in both DataFrames
-        def bootstrap_statistics(column):
-            """Calculate bootstrapping statistics for a given column."""
-            if column.dtype in [np.float64, np.int64]:  # Only calculate for numeric columns
-                samples = [column.sample(frac=1, replace=True).mean() for _ in range(1000)]
-                return {
-                    "mean": np.mean(samples),
-                    "std_dev": np.std(samples),
-                    "confidence_interval": (np.percentile(samples, 2.5), np.percentile(samples, 97.5))
-                }
-            return None
 
+        for col in with_product_df.columns:
+            if with_product_df[col].dtype == 'object':
+                try:
+                    with_product_df[col] = with_product_df[col].astype(float)
+                except Exception:
+                    pass
+        
+        for col in without_product_df.columns:
+            if without_product_df[col].dtype == 'object':
+                try:
+                    without_product_df[col] = without_product_df[col].astype(float)
+                except Exception:
+                    pass
+
+        def bootstrap_statistics(column):
+            if column.dtype in [np.number]:
+                np.random.seed(42)
+                indices = np.random.randint(0, len(column), size=(1000, len(column)))
+                samples = np.array([column.values[idx].mean() for idx in indices])
+                
+                samples = samples[~np.isnan(samples)]
+                
+                if len(samples) == 0:
+                    return {
+                        "mean": None,
+                        "standard_deviation": None,
+                        "confidence_interval": (None, None)
+                    }
+                
+                return {
+                    "mean": round(float(np.mean(samples)), 3),
+                    "standard_deviation": round(float(np.std(samples, ddof=1)), 3),
+                    "confidence_interval": (
+                        round(float(np.percentile(samples, 2.5)), 3),
+                        round(float(np.percentile(samples, 97.5)), 3)
+                    )
+                }
+                
+            else:
+                return {
+                    "mean": None,
+                    "standard_deviation": None,
+                    "confidence_interval": (None, None)
+                }
+
+        relevant_columns = list(all_columns)
         bootstrap_stats_with_product = {
             col: bootstrap_statistics(with_product_df[col])
-            for col in with_product_df.columns
-            if with_product_df[col].dtype in [np.float64, np.int64]
+            for col in relevant_columns if col in with_product_df.columns
         }
 
         bootstrap_stats_without_product = {
             col: bootstrap_statistics(without_product_df[col])
-            for col in without_product_df.columns
-            if without_product_df[col].dtype in [np.float64, np.int64]
+            for col in relevant_columns if col in without_product_df.columns
         }
         
-        # Return full DataFrames info, model configuration, and bootstrapping statistics
+        with_product_df = with_product_df.replace({np.nan: None})
+        without_product_df = without_product_df.replace({np.nan: None})
+        
         return {
             "message": "Dependency model saved successfully",
             "model_info": {
