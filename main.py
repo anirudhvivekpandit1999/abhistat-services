@@ -25,8 +25,7 @@ import asyncio
 from pathlib import Path
 from pydantic import BaseModel
 import logging
-import sys
-from utils import (
+from .utils import (
     read_file,
     get_unnamed_columns,
     get_mismatched_columns,
@@ -229,6 +228,9 @@ async def process_files(
             df2[numeric_cols_df2] = df2[numeric_cols_df2].round(3)
         logging.info("Numeric columns rounded successfully")
 
+        df1_clean = df1.replace({np.nan: None, np.inf: None, -np.inf: None})
+        df2_clean = df2.replace({np.nan: None, np.inf: None, -np.inf: None})
+
         session_data_store[session_id] = {
             "df1": df1,
             "df2": df2,
@@ -245,13 +247,13 @@ async def process_files(
                 "filename": file1.filename,
                 "shape": df1.shape,
                 "columns": list(df1.columns),
-                "preview": df1.head(10).to_dict(orient="records"),
+                "preview": df1_clean.head(10).to_dict(orient="records"),
             },
             "file2_info": {
                 "filename": file2.filename,
                 "shape": df2.shape,
                 "columns": list(df2.columns),
-                "preview": df2.head(10).to_dict(orient="records"),
+                "preview": df2_clean.head(10).to_dict(orient="records"),
             },
         }
 
@@ -324,6 +326,14 @@ async def save_calculated_columns(
         processed_columns = []
 
         for column_request in data.columns:
+            column_name = column_request.column_name
+            formula = column_request.formula
+            formula_elements = column_request.formula_elements
+            
+            for element in formula_elements:
+                if element["type"] == "column":
+                    column_value = element["value"]
+                    formula = formula.replace(column_value, f'[{column_value}]')
             
             processed_formula = process_formula(formula)
             logging.info(f"Processed formula for '{column_name}': {processed_formula}")
@@ -359,13 +369,16 @@ async def save_calculated_columns(
         session_data["df2"] = df2
         session_data["calculated_columns"] = processed_columns
 
+        df1_preview = df1[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
+        df2_preview = df2[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
+
         logging.info(f"Successfully added {len(new_columns)} calculated columns")
         return {
             "message": f"Successfully added {len(new_columns)} calculated columns",
             "new_columns": new_columns,
             "preview": {
-                "file1": df1[new_columns].head(5).to_dict(orient="records") if new_columns else {},
-                "file2": df2[new_columns].head(5).to_dict(orient="records") if new_columns else {},
+                "file1": df1_preview.to_dict(orient="records") if not df1_preview.empty else {},
+                "file2": df2_preview.to_dict(orient="records") if not df2_preview.empty else {},
             }
         }
 
@@ -476,8 +489,8 @@ async def save_dependency_model(
             for col in relevant_columns if col in without_product_df.columns
         }
         
-        with_product_df = with_product_df.replace({np.nan: None})
-        without_product_df = without_product_df.replace({np.nan: None})
+        with_product_df = with_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
+        without_product_df = without_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         
         return {
             "message": "Dependency model saved successfully",

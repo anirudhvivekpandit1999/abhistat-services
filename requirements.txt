@@ -5,4 +5,5 @@ uvicorn
 pyarrow
 ipykernel
 openpyxl
+chardet
 numexpr
