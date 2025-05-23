@@ -71,12 +71,16 @@ app = FastAPI(title="File Processor API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-
 
 async def get_session_data(
     request: Request,
@@ -448,26 +452,38 @@ async def save_dependency_model(
                     pass
 
         def bootstrap_statistics(column):
-            if column.dtype in [np.number]:
+            col = column
+            if col.dtype == object:
+                try:
+                    col = pd.to_numeric(col, errors="coerce")
+                except Exception:
+                    pass
+
+            if np.issubdtype(col.dtype, np.floating) or np.issubdtype(col.dtype, np.integer):
                 np.random.seed(42)
-                indices = np.random.randint(0, len(column), size=(1000, len(column)))
-                samples = np.array([column.values[idx].mean() for idx in indices])
-                
+                values = col.values.astype(float)
+                values = values[~np.isnan(values)]
+                if len(values) == 0:
+                    return {
+                    "mean": None,
+                    "standard_deviation": None,
+                    "confidence_interval": (None, None)
+                    }
+                indices = np.random.randint(0, len(values), size=(1000, len(values)))
+                samples = np.array([values[idx].mean() for idx in indices])
                 samples = samples[~np.isnan(samples)]
-                
                 if len(samples) == 0:
                     return {
-                        "mean": None,
-                        "standard_deviation": None,
-                        "confidence_interval": (None, None)
+                    "mean": None,
+                    "standard_deviation": None,
+                    "confidence_interval": (None, None)
                     }
-                
                 return {
                     "mean": round(float(np.mean(samples)), 3),
                     "standard_deviation": round(float(np.std(samples, ddof=1)), 3),
                     "confidence_interval": (
-                        round(float(np.percentile(samples, 2.5)), 3),
-                        round(float(np.percentile(samples, 97.5)), 3)
+                    round(float(np.percentile(samples, 2.5)), 3),
+                    round(float(np.percentile(samples, 97.5)), 3)
                     )
                 }
                 
