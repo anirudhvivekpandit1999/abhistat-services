@@ -66,15 +66,16 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-
-app = FastAPI(title="File Processor API", lifespan=lifespan)
+app = FastAPI(title="File Processor API", lifespan=lifespan, root_path="/api")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "https://abhistat.com",
-        "https://www.abhistat.com"
+        "https://www.abhistat.com",
+        "http://abhistat.com",
+        "http://www.abhistat.com"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -137,7 +138,7 @@ async def root():
     return {"message": "Welcome to the Abhitech Statistical Backend"}
 
 
-@app.post("/api/process-files")
+@app.post("/process-files")
 async def process_files(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...),
@@ -268,7 +269,7 @@ async def process_files(
             os.remove(temp_file2_path)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.post("/api/save-calculated-columns")
+@app.post("/save-calculated-columns")
 async def save_calculated_columns(
     request: Request,
     data: BatchCalculatedColumnsRequest,
@@ -389,7 +390,7 @@ async def save_calculated_columns(
         logging.exception("An unexpected error occurred while processing calculated columns")
         return JSONResponse(status_code=500, content={"errors": [str(e)]})
 
-@app.get("/api/session-status")
+@app.get("/session-status")
 async def session_status(
     session_data: Optional[Dict] = Depends(get_session_data),
 ):
@@ -405,7 +406,7 @@ async def session_status(
         }
     return {"status": "no_active_session"}
 
-@app.post("/api/save-dependency-model")
+@app.post("/save-dependency-model")
 async def save_dependency_model(
     data: DependencyModelRequest,
     session_data: Dict = Depends(get_session_data)
