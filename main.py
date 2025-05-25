@@ -72,13 +72,6 @@ app = FastAPI(title="File Processor API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://3.7.71.0:80",
-        "http://3.7.71.0",
-        "http://3.7.71.0:443",
         "https://abhistat.com"
     ],
     allow_credentials=True,
