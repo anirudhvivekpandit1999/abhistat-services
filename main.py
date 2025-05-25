@@ -136,7 +136,7 @@ async def root():
     return {"message": "Welcome to the Abhitech Statistical Backend"}
 
 
-@app.post("/process-files/")
+@app.post("/api/process-files")
 async def process_files(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...),
@@ -267,7 +267,7 @@ async def process_files(
             os.remove(temp_file2_path)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.post("/save-calculated-columns/")
+@app.post("/api/save-calculated-columns")
 async def save_calculated_columns(
     request: Request,
     data: BatchCalculatedColumnsRequest,
@@ -388,7 +388,7 @@ async def save_calculated_columns(
         logging.exception("An unexpected error occurred while processing calculated columns")
         return JSONResponse(status_code=500, content={"errors": [str(e)]})
 
-@app.get("/session-status/")
+@app.get("/api/session-status")
 async def session_status(
     session_data: Optional[Dict] = Depends(get_session_data),
 ):
@@ -404,7 +404,7 @@ async def session_status(
         }
     return {"status": "no_active_session"}
 
-@app.post("/save-dependency-model/")
+@app.post("/api/save-dependency-model")
 async def save_dependency_model(
     data: DependencyModelRequest,
     session_data: Dict = Depends(get_session_data)
