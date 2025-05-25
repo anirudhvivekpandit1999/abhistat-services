@@ -72,7 +72,8 @@ app = FastAPI(title="File Processor API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://abhistat.com"
+        "https://abhistat.com",
+        "https://www.abhistat.com"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
