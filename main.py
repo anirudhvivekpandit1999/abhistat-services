@@ -79,7 +79,6 @@ app.add_middleware(
         "http://3.7.71.0:80",
         "http://3.7.71.0",
         "http://3.7.71.0:443",
-        "http://abhistat.com",
         "https://abhistat.com"
     ],
     allow_credentials=True,
