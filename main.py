@@ -72,44 +72,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "http://localhost:3000",
-        "http://localhost:8080",
         "https://abhistat.com",
         "https://www.abhistat.com",
         "http://abhistat.com",
-        "http://www.abhistat.com",
+        "http://www.abhistat.com"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
-    allow_headers=[
-        "Accept",
-        "Accept-Language", 
-        "Content-Language",
-        "Content-Type",
-        "Authorization",
-        "X-Session-ID",
-        "Cookie",
-        "X-Requested-With",
-        "Origin",
-        "Access-Control-Request-Method",
-        "Access-Control-Request-Headers"
-    ],
-    expose_headers=["Set-Cookie", "X-Session-ID"],
-    max_age=86400
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
-
-@app.options("/{path:path}")
-async def options_handler(path: str):
-    return JSONResponse(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD",
-            "Access-Control-Allow-Headers": "Accept, Accept-Language, Content-Language, Content-Type, Authorization, X-Session-ID, Cookie, X-Requested-With, Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Max-Age": "86400"
-        }
-    )
 
 async def get_session_data(
     request: Request,
@@ -169,8 +140,8 @@ async def root():
 
 @app.post("/process-files")
 async def process_files(
-    file1: UploadFile = File(..., description="First file (without product)"),
-    file2: UploadFile = File(..., description="Second file (with product)"),
+    file1: UploadFile = File(...),
+    file2: UploadFile = File(...),
     remove_unnamed: bool = Form(False),
     remove_mismatched: bool = Form(False),
     session_id: Optional[str] = Cookie(None),
@@ -187,8 +158,7 @@ async def process_files(
             value=session_id,
             httponly=False,
             samesite="lax",
-            max_age=86400,
-            secure=False
+            max_age=86400
         )
         logging.info("Session ID cookie set successfully")
 
@@ -274,7 +244,7 @@ async def process_files(
         }
         logging.info(f"Session data stored successfully for session ID: {session_id}")
 
-        response_data = {
+        return {
             "message": "Files processed successfully",
             "session_id": session_id,
             "file1_info": {
@@ -291,28 +261,13 @@ async def process_files(
             },
         }
 
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        
-        return response_data
-
     except Exception as e:
         logging.error(f"An error occurred during file processing: {str(e)}")
-        logging.exception("Full traceback:")
-
         if os.path.exists(temp_file1_path):
             os.remove(temp_file1_path)
         if os.path.exists(temp_file2_path):
             os.remove(temp_file2_path)
-            
-        return JSONResponse(
-            status_code=500, 
-            content={"error": f"File processing failed: {str(e)}"},
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Credentials": "true"
-            }
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/save-calculated-columns")
 async def save_calculated_columns(
@@ -584,11 +539,4 @@ async def save_dependency_model(
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8000,
-        limit_max_requests=1000,
-        timeout_keep_alive=30,
-        loop="asyncio"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000)
