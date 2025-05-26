@@ -446,8 +446,8 @@ async def save_dependency_model(
             "independent_variables": data.independent_variables
         }
         
-        with_product_df = df1
-        without_product_df = df2
+        without_product_df = df1
+        with_product_df = df2
 
         for col in with_product_df.columns:
             if with_product_df[col].dtype == 'object':
