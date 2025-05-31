@@ -7,3 +7,4 @@ ipykernel
 openpyxl
 chardet
 numexpr
+scikit-learn

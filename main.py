@@ -33,6 +33,7 @@ from utils import (
     process_formula,
     validate_formula
 )
+from sklearn.utils import resample
 
 TEMP_DIR = Path("./temp_files")
 TEMP_DIR.mkdir(exist_ok=True)
@@ -463,59 +464,57 @@ async def save_dependency_model(
                 except Exception:
                     pass
 
-        def bootstrap_statistics(column):
-            col = column
-            if col.dtype == object:
+        def bootstrap_difference_analysis(df_before, df_after, n_bootstraps=10000):            
+            common_columns = df_before.columns.intersection(df_after.columns)
+            significant_impact = []
+            no_significant_impact = []
+            
+            for column in common_columns:
                 try:
-                    col = pd.to_numeric(col, errors="coerce")
-                except Exception:
-                    pass
-
-            if np.issubdtype(col.dtype, np.floating) or np.issubdtype(col.dtype, np.integer):
-                np.random.seed(42)
-                values = col.values.astype(float)
-                values = values[~np.isnan(values)]
-                if len(values) == 0:
-                    return {
-                    "mean": None,
-                    "standard_deviation": None,
-                    "confidence_interval": (None, None)
+                    data_before = df_before[column].dropna()
+                    data_after = df_after[column].dropna()
+                    
+                    if not np.issubdtype(data_before.dtype, np.number):
+                        continue
+                    
+                    bootstrapped_differences = []
+                    for _ in range(n_bootstraps):
+                        sample_before = resample(data_before)
+                        sample_after = resample(data_after)
+                        bootstrapped_differences.append(np.mean(sample_after) - np.mean(sample_before))
+                    
+                    lower_bound = np.percentile(bootstrapped_differences, 2.5)
+                    upper_bound = np.percentile(bootstrapped_differences, 97.5)
+                    mean_difference = np.mean(bootstrapped_differences)
+                    std_difference = np.std(bootstrapped_differences, ddof=1)
+                    
+                    column_result = {
+                        "column": column,
+                        "mean_difference": round(float(mean_difference), 3),
+                        "standard_deviation": round(float(std_difference), 3),
+                        "confidence_interval": {
+                            "lower_bound": round(float(lower_bound), 3),
+                            "upper_bound": round(float(upper_bound), 3)
+                        },
+                        "is_significant": lower_bound > 0 or upper_bound < 0
                     }
-                indices = np.random.randint(0, len(values), size=(1000, len(values)))
-                samples = np.array([values[idx].mean() for idx in indices])
-                samples = samples[~np.isnan(samples)]
-                if len(samples) == 0:
-                    return {
-                    "mean": None,
-                    "standard_deviation": None,
-                    "confidence_interval": (None, None)
-                    }
-                return {
-                    "mean": round(float(np.mean(samples)), 3),
-                    "standard_deviation": round(float(np.std(samples, ddof=1)), 3),
-                    "confidence_interval": (
-                    round(float(np.percentile(samples, 2.5)), 3),
-                    round(float(np.percentile(samples, 97.5)), 3)
-                    )
-                }
-                
-            else:
-                return {
-                    "mean": None,
-                    "standard_deviation": None,
-                    "confidence_interval": (None, None)
-                }
+                    
+                    if lower_bound > 0 or upper_bound < 0:
+                        significant_impact.append(column_result)
+                    else:
+                        no_significant_impact.append(column_result)
+                        
+                except Exception as e:
+                    logging.error(f"Error processing column '{column}': {e}")
+                    continue
+            
+            return {
+                "significant_impact": significant_impact,
+                "no_significant_impact": no_significant_impact,
+                "total_columns_analyzed": len(significant_impact) + len(no_significant_impact)
+            }
 
-        relevant_columns = list(all_columns)
-        bootstrap_stats_with_product = {
-            col: bootstrap_statistics(with_product_df[col])
-            for col in relevant_columns if col in with_product_df.columns
-        }
-
-        bootstrap_stats_without_product = {
-            col: bootstrap_statistics(without_product_df[col])
-            for col in relevant_columns if col in without_product_df.columns
-        }
+        bootstrap_results = bootstrap_difference_analysis(without_product_df, with_product_df)
         
         with_product_df = with_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         without_product_df = without_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
@@ -540,15 +539,11 @@ async def save_dependency_model(
                 "available_columns": list(all_columns),
                 "calculated_columns": [column["name"] for column in session_data.get("calculated_columns", [])],
             },
-            "bootstrap_statistics": {
-                "with_product": bootstrap_stats_with_product,
-                "without_product": bootstrap_stats_without_product,
-            }
+            "bootstrap_analysis": bootstrap_results
         }
     except Exception as e:
         logging.exception("An unexpected error occurred while processing dependency model")
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-
+    
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
