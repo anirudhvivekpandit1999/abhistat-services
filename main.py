@@ -464,7 +464,7 @@ async def save_dependency_model(
                 except Exception:
                     pass
 
-        def bootstrap_difference_analysis(df_before, df_after, n_bootstraps=10000):            
+        def bootstrap_difference_analysis(df_before, df_after, n_bootstraps=1000):            
             common_columns = df_before.columns.intersection(df_after.columns)
             significant_impact = []
             no_significant_impact = []
