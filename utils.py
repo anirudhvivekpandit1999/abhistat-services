@@ -138,10 +138,6 @@ def validate_formula(formula, available_columns):
 
 
 def process_formula(formula):
-    processed = formula
-    
-    processed = re.sub(r'\[([^\[\]]+)\]', lambda match: f'df["{match.group(1)}"]', processed)
-    
-    processed = re.sub(r'(\])(\s*,\s*\[)', r'\1,\2', processed)
-    
+    processed = re.sub(r'\[([^\[\]]+)\]', lambda match: f'df["{match.group(1)}"]', formula)
+    processed = re.sub(r'\[df\["([^\[\]]+)"\]\]', r'df["\1"]', processed)
     return processed

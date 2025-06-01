@@ -299,10 +299,12 @@ async def save_calculated_columns(
             formula = column_request.formula
             formula_elements = column_request.formula_elements
             
-            for element in formula_elements:
-                if element["type"] == "column":
-                    column_value = element["value"]
-                    formula = formula.replace(column_value, f'[{column_value}]')
+            unique_columns = set(
+                element["value"] for element in formula_elements if element["type"] == "column"
+            )
+            for column_value in unique_columns:
+                pattern = rf'(?<!\[)\b{re.escape(column_value)}\b(?!\])'
+                formula = re.sub(pattern, f'[{column_value}]', formula)
                     
             logging.info(f"Processing column: {column_name} with formula: {formula}")
                   
