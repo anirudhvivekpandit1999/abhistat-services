@@ -31,7 +31,8 @@ from utils import (
     get_mismatched_columns,
     cleanup_expired_files_periodically,
     process_formula,
-    validate_formula
+    validate_formula,
+    bootstrap_all_columns
 )
 
 TEMP_DIR = Path("./temp_files")
@@ -465,60 +466,8 @@ async def save_dependency_model(
                 except Exception:
                     pass
 
-        def bootstrap_statistics(column):
-            col = column
-            if col.dtype == object:
-                try:
-                    col = pd.to_numeric(col, errors="coerce")
-                except Exception:
-                    pass
+        bootstrap_results = bootstrap_all_columns(without_product_df, with_product_df, 1000)    
 
-            if np.issubdtype(col.dtype, np.floating) or np.issubdtype(col.dtype, np.integer):
-                np.random.seed(42)
-                values = col.values.astype(float)
-                values = values[~np.isnan(values)]
-                if len(values) == 0:
-                    return {
-                    "mean": None,
-                    "standard_deviation": None,
-                    "confidence_interval": (None, None)
-                    }
-                indices = np.random.randint(0, len(values), size=(1000, len(values)))
-                samples = np.array([values[idx].mean() for idx in indices])
-                samples = samples[~np.isnan(samples)]
-                if len(samples) == 0:
-                    return {
-                    "mean": None,
-                    "standard_deviation": None,
-                    "confidence_interval": (None, None)
-                    }
-                return {
-                    "mean": round(float(np.mean(samples)), 3),
-                    "standard_deviation": round(float(np.std(samples, ddof=1)), 3),
-                    "confidence_interval": (
-                    round(float(np.percentile(samples, 2.5)), 3),
-                    round(float(np.percentile(samples, 97.5)), 3)
-                    )
-                }
-                
-            else:
-                return {
-                    "mean": None,
-                    "standard_deviation": None,
-                    "confidence_interval": (None, None)
-                }
-
-        relevant_columns = list(all_columns)
-        bootstrap_stats_with_product = {
-            col: bootstrap_statistics(with_product_df[col])
-            for col in relevant_columns if col in with_product_df.columns
-        }
-
-        bootstrap_stats_without_product = {
-            col: bootstrap_statistics(without_product_df[col])
-            for col in relevant_columns if col in without_product_df.columns
-        }
-        
         with_product_df = with_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         without_product_df = without_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         
@@ -542,10 +491,7 @@ async def save_dependency_model(
                 "available_columns": list(all_columns),
                 "calculated_columns": [column["name"] for column in session_data.get("calculated_columns", [])],
             },
-            "bootstrap_statistics": {
-                "with_product": bootstrap_stats_with_product,
-                "without_product": bootstrap_stats_without_product,
-            }
+            "bootstrap_analysis": bootstrap_results
         }
     except Exception as e:
         logging.exception("An unexpected error occurred while processing dependency model")
