@@ -16,7 +16,6 @@ from contextlib import asynccontextmanager
 import os
 import uuid
 import uvicorn
-import pandas as pd
 import shutil
 import re
 import numpy as np
@@ -41,7 +40,6 @@ TEMP_DIR.mkdir(exist_ok=True)
 # logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 session_data_store = {}
-session_locks = {}
 
 class DependencyModelRequest(BaseModel):
     dependent_variables: List[str]
@@ -113,17 +111,17 @@ async def get_session_data(
     for sid in session_sources:
         if sid and sid in session_data_store:
             effective_session_id = sid
-            # logging.info(f"Session ID valid: {effective_session_id}")
+            # logging.info(f"Session ID from source is valid: {effective_session_id}")
             break
     
-    if not effective_session_id and request.method in ["POST", "PUT"]:
+    if not effective_session_id and request.method in {"POST", "PUT"}:
         try:
             body = await request.json()
             body_session = body.get("session_id")
             if body_session and body_session in session_data_store:
                 effective_session_id = body_session
                 # logging.info(f"Session ID from request body is valid: {effective_session_id}")
-        except Exception as e:
+        except Exception:
             # logging.warning(f"Failed to parse session ID from request body: {str(e)}")
             pass
     
@@ -137,7 +135,7 @@ async def get_session_data(
                 "debug_info": {
                     "cookie_session": session_id,
                     "header_session": x_session_id,
-                    "available_sessions": available_sessions[:5] if available_sessions else [],
+                    "available_sessions": available_sessions[:5],
                     "session_count": len(available_sessions)
                 }
             }
@@ -176,118 +174,109 @@ async def process_files(
         )
         # logging.info("Session ID cookie set successfully")
 
-    if session_id not in session_locks:
-        session_locks[session_id] = asyncio.Lock()
+    session_dir = TEMP_DIR / session_id
+    session_dir.mkdir(exist_ok=True)
+    # logging.info(f"Session directory created: {session_dir}")
 
-    async with session_locks[session_id]:
-        session_dir = TEMP_DIR / session_id
-        session_dir.mkdir(exist_ok=True)
-        # logging.info(f"Session directory created: {session_dir}")
+    temp_file1_path = session_dir / f"file1_{uuid.uuid4()}_{file1.filename}"
+    temp_file2_path = session_dir / f"file2_{uuid.uuid4()}_{file2.filename}"
+    # logging.info(f"Temporary file paths created: {temp_file1_path}, {temp_file2_path}")
 
-        temp_file1_path = session_dir / f"file1_{uuid.uuid4()}_{file1.filename}"
-        temp_file2_path = session_dir / f"file2_{uuid.uuid4()}_{file2.filename}"
-        # logging.info(f"Temporary file paths created: {temp_file1_path}, {temp_file2_path}")
+    try:
+        for file_obj, temp_path in [(file1, temp_file1_path), (file2, temp_file2_path)]:
+            with open(temp_path, "wb") as buffer:
+                shutil.copyfileobj(file_obj.file, buffer)
+            file_obj.file.seek(0)
+        # logging.info(f"Files saved: {temp_file1_path}, {temp_file2_path}")
 
-        try:
-            await asyncio.gather(
-                asyncio.to_thread(lambda: shutil.copyfileobj(file1.file, open(temp_file1_path, "wb"))),
-                asyncio.to_thread(lambda: shutil.copyfileobj(file2.file, open(temp_file2_path, "wb")))
-            )
-            # logging.info(f"Files saved: {temp_file1_path}, {temp_file2_path}")
+        # logging.info("Reading files into DataFrames")
+        df1 = read_file(file1)
+        df2 = read_file(file2)
+        # logging.info(f"Files read successfully: {file1.filename}, {file2.filename}")
 
-            file1.file.seek(0)
-            file2.file.seek(0)
+        unnamed_cols_df1 = get_unnamed_columns(df1)
+        unnamed_cols_df2 = get_unnamed_columns(df2)
 
-            # logging.info("Reading files into DataFrames")
-            df1, df2 = await asyncio.gather(
-                asyncio.to_thread(read_file, file1),
-                asyncio.to_thread(read_file, file2)
-            )
-            # logging.info(f"Files read successfully: {file1.filename}, {file2.filename}")
+        if (unnamed_cols_df1 or unnamed_cols_df2) and not remove_unnamed:
+            error_parts = []
+            if unnamed_cols_df1:
+                error_parts.append(f"File '{file1.filename}' has unnamed columns at indexes {unnamed_cols_df1}.")
+            if unnamed_cols_df2:
+                error_parts.append(f"File '{file2.filename}' has unnamed columns at indexes {unnamed_cols_df2}.")
+            error_message = "Unnamed columns detected: " + " ".join(error_parts)
+            # logging.warning(error_message)
+            return JSONResponse(status_code=400, content={"error": error_message})
 
-            unnamed_cols_df1 = get_unnamed_columns(df1)
-            unnamed_cols_df2 = get_unnamed_columns(df2)
+        if remove_unnamed:
+            unnamed_mask1 = ~df1.columns.str.contains("^Unnamed", regex=True)
+            unnamed_mask2 = ~df2.columns.str.contains("^Unnamed", regex=True)
+            df1 = df1.loc[:, unnamed_mask1]
+            df2 = df2.loc[:, unnamed_mask2]
+            # logging.info("Unnamed columns removed successfully")
 
-            if (unnamed_cols_df1 or unnamed_cols_df2) and not remove_unnamed:
-                error_parts = ["Unnamed columns detected: "]
-                if unnamed_cols_df1:
-                    error_parts.append(f"File '{file1.filename}' has unnamed columns at indexes {unnamed_cols_df1}. ")
-                if unnamed_cols_df2:
-                    error_parts.append(f"File '{file2.filename}' has unnamed columns at indexes {unnamed_cols_df2}.")
-                error_message = "".join(error_parts)
-                # logging.warning(error_message)
-                return JSONResponse(status_code=400, content={"error": error_message})
+        mismatched_cols = get_mismatched_columns(df1, df2)
 
-            if remove_unnamed:
-                unnamed_mask1 = df1.columns.str.contains("^Unnamed", na=False)
-                unnamed_mask2 = df2.columns.str.contains("^Unnamed", na=False)
-                df1 = df1.loc[:, ~unnamed_mask1]
-                df2 = df2.loc[:, ~unnamed_mask2]
-                # logging.info("Unnamed columns removed successfully")
+        if (mismatched_cols["only_in_df1"] or mismatched_cols["only_in_df2"]) and not remove_mismatched:
+            error_parts = []
+            if mismatched_cols["only_in_df1"]:
+                error_parts.append(f"Columns only in '{file1.filename}': {mismatched_cols['only_in_df1']}.")
+            if mismatched_cols["only_in_df2"]:
+                error_parts.append(f"Columns only in '{file2.filename}': {mismatched_cols['only_in_df2']}.")
+            error_message = "Mismatched columns detected: " + " ".join(error_parts)
+            # logging.warning(error_message)
+            return JSONResponse(status_code=400, content={"error": error_message})
 
-            mismatched_cols = get_mismatched_columns(df1, df2)
+        if remove_mismatched:
+            common_columns = list(set(df1.columns).intersection(set(df2.columns)))
+            df1 = df1[common_columns]
+            df2 = df2[common_columns]
+            # logging.info("Mismatched columns removed successfully")
 
-            if (mismatched_cols["only_in_df1"] or mismatched_cols["only_in_df2"]) and not remove_mismatched:
-                error_parts = ["Mismatched columns detected: "]
-                if mismatched_cols["only_in_df1"]:
-                    error_parts.append(f"Columns only in '{file1.filename}': {mismatched_cols['only_in_df1']}. ")
-                if mismatched_cols["only_in_df2"]:
-                    error_parts.append(f"Columns only in '{file2.filename}': {mismatched_cols['only_in_df2']}.")
-                error_message = "".join(error_parts)
-                # logging.warning(error_message)
-                return JSONResponse(status_code=400, content={"error": error_message})
+        numeric_cols_df1 = df1.select_dtypes(include=[np.number]).columns
+        numeric_cols_df2 = df2.select_dtypes(include=[np.number]).columns
+        
+        if len(numeric_cols_df1) > 0:
+            df1.loc[:, numeric_cols_df1] = df1[numeric_cols_df1].round(3)
+        if len(numeric_cols_df2) > 0:
+            df2.loc[:, numeric_cols_df2] = df2[numeric_cols_df2].round(3)
+        # logging.info("Numeric columns rounded successfully")
 
-            if remove_mismatched:
-                common_columns = list(set(df1.columns) & set(df2.columns))
-                df1 = df1[common_columns]
-                df2 = df2[common_columns]
-                # logging.info("Mismatched columns removed successfully")
+        replacement_dict = {np.nan: None, np.inf: None, -np.inf: None}
+        df1_clean = df1.replace(replacement_dict)
+        df2_clean = df2.replace(replacement_dict)
 
-            numeric_cols_df1 = df1.select_dtypes(include=[np.number]).columns
-            numeric_cols_df2 = df2.select_dtypes(include=[np.number]).columns
-            
-            if len(numeric_cols_df1) > 0:
-                df1[numeric_cols_df1] = df1[numeric_cols_df1].round(3)
-            if len(numeric_cols_df2) > 0:
-                df2[numeric_cols_df2] = df2[numeric_cols_df2].round(3)
-            # logging.info("Numeric columns rounded successfully")
+        session_data_store[session_id] = {
+            "df1": df1,
+            "df2": df2,
+            "file1_name": file1.filename,
+            "file2_name": file2.filename,
+            "calculated_columns": [],
+        }
+        # logging.info(f"Session data stored successfully for session ID: {session_id}")
 
-            nan_inf_dict = {np.nan: None, np.inf: None, -np.inf: None}
-            df1_clean = df1.replace(nan_inf_dict)
-            df2_clean = df2.replace(nan_inf_dict)
+        return {
+            "message": "Files processed successfully",
+            "session_id": session_id,
+            "file1_info": {
+                "filename": file1.filename,
+                "shape": df1.shape,
+                "columns": list(df1.columns),
+                "preview": df1_clean.head(10).to_dict(orient="records"),
+            },
+            "file2_info": {
+                "filename": file2.filename,
+                "shape": df2.shape,
+                "columns": list(df2.columns),
+                "preview": df2_clean.head(10).to_dict(orient="records"),
+            },
+        }
 
-            session_data_store[session_id] = {
-                "df1": df1,
-                "df2": df2,
-                "file1_name": file1.filename,
-                "file2_name": file2.filename,
-                "calculated_columns": [],
-            }
-            # logging.info(f"Session data stored successfully for session ID: {session_id}")
-
-            return {
-                "message": "Files processed successfully",
-                "session_id": session_id,
-                "file1_info": {
-                    "filename": file1.filename,
-                    "shape": df1.shape,
-                    "columns": list(df1.columns),
-                    "preview": df1_clean.head(10).to_dict(orient="records"),
-                },
-                "file2_info": {
-                    "filename": file2.filename,
-                    "shape": df2.shape,
-                    "columns": list(df2.columns),
-                    "preview": df2_clean.head(10).to_dict(orient="records"),
-                },
-            }
-
-        except Exception as e:
-            # logging.error(f"An error occurred during file processing: {str(e)}")
-            for path in [temp_file1_path, temp_file2_path]:
-                if os.path.exists(path):
-                    os.remove(path)
-            return JSONResponse(status_code=500, content={"error": str(e)})
+    except Exception as e:
+        # logging.error(f"An error occurred during file processing: {str(e)}")
+        for temp_path in [temp_file1_path, temp_file2_path]:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/save-calculated-columns")
 async def save_calculated_columns(
@@ -301,18 +290,20 @@ async def save_calculated_columns(
         df2 = session_data["df2"]
         new_columns = []
         errors = []
-
-        column_name_pattern = re.compile(r"^[a-zA-Z0-9_]+$")
-        original_columns = set(df1.columns).intersection(set(df2.columns))
         
+        original_columns = set(df1.columns).intersection(set(df2.columns))
+        column_name_pattern = re.compile(r"^[a-zA-Z0-9_]+$")
+
         for column_request in data.columns:
             column_name = column_request.column_name
             formula = column_request.formula
             formula_elements = column_request.formula_elements
             
             unique_columns = {
-                element["value"] for element in formula_elements if element["type"] == "column"
+                element["value"] for element in formula_elements 
+                if element["type"] == "column"
             }
+            
             for column_value in unique_columns:
                 pattern = rf'(?<!\[)\b{re.escape(column_value)}\b(?!\])'
                 formula = re.sub(pattern, f'[{column_value}]', formula)
@@ -335,13 +326,11 @@ async def save_calculated_columns(
             validation_errors_df2 = validate_formula(formula, list(df2.columns))
             
             if validation_errors_df1:
-                for error in validation_errors_df1:
-                    errors.append(f"Formula for '{column_name}' in first dataset: {error}")
+                errors.extend(f"Formula for '{column_name}' in first dataset: {error}" for error in validation_errors_df1)
                 continue
                 
             if validation_errors_df2:
-                for error in validation_errors_df2:
-                    errors.append(f"Formula for '{column_name}' in second dataset: {error}")
+                errors.extend(f"Formula for '{column_name}' in second dataset: {error}" for error in validation_errors_df2)
                 continue
 
         if errors:
@@ -387,10 +376,8 @@ async def save_calculated_columns(
                 # logging.exception("Traceback for the error:")
                 
                 for col in new_columns:
-                    if col in df1.columns:
-                        df1.drop(columns=[col], inplace=True)
-                    if col in df2.columns:
-                        df2.drop(columns=[col], inplace=True)
+                    df1.drop(columns=[col], inplace=True, errors='ignore')
+                    df2.drop(columns=[col], inplace=True, errors='ignore')
                 
                 return JSONResponse(
                     status_code=400, 
@@ -401,18 +388,22 @@ async def save_calculated_columns(
         session_data["df2"] = df2
         session_data["calculated_columns"] = processed_columns
 
-        nan_inf_dict = {np.nan: None, np.inf: None, -np.inf: None}
-        df1_preview = df1[new_columns].head(5).replace(nan_inf_dict) if new_columns else pd.DataFrame()
-        df2_preview = df2[new_columns].head(5).replace(nan_inf_dict) if new_columns else pd.DataFrame()
+        replacement_dict = {np.nan: None, np.inf: None, -np.inf: None}
+        if new_columns:
+            df1_preview = df1[new_columns].head(5).replace(replacement_dict)
+            df2_preview = df2[new_columns].head(5).replace(replacement_dict)
+            preview_data = {
+                "file1": df1_preview.to_dict(orient="records"),
+                "file2": df2_preview.to_dict(orient="records"),
+            }
+        else:
+            preview_data = {"file1": {}, "file2": {}}
 
         # logging.info(f"Successfully added {len(new_columns)} calculated columns")
         return {
             "message": f"Successfully added {len(new_columns)} calculated columns",
             "new_columns": new_columns,
-            "preview": {
-                "file1": df1_preview.to_dict(orient="records") if not df1_preview.empty else {},
-                "file2": df2_preview.to_dict(orient="records") if not df2_preview.empty else {},
-            }
+            "preview": preview_data
         }
 
     except Exception as e:
@@ -429,7 +420,7 @@ async def session_status(
             "session_info": {
                 "file1_name": session_data.get("file1_name"),
                 "file2_name": session_data.get("file2_name"),
-                "columns_count": len(session_data.get("df1", pd.DataFrame()).columns) if "df1" in session_data else 0,
+                "columns_count": len(session_data["df1"].columns) if "df1" in session_data else 0,
                 "calculated_columns": len(session_data.get("calculated_columns", [])),
             }
         }
@@ -466,31 +457,19 @@ async def save_dependency_model(
         without_product_df = df1
         with_product_df = df2
 
-        object_columns_df1 = with_product_df.select_dtypes(include=['object']).columns
-        object_columns_df2 = without_product_df.select_dtypes(include=['object']).columns
-        
-        for col in object_columns_df1:
-            try:
-                with_product_df[col] = pd.to_numeric(with_product_df[col], errors='ignore')
-            except Exception:
-                pass
-        
-        for col in object_columns_df2:
-            try:
-                without_product_df[col] = pd.to_numeric(without_product_df[col], errors='ignore')
-            except Exception:
-                pass
+        for df in [with_product_df, without_product_df]:
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    try:
+                        df[col] = df[col].astype(float)
+                    except Exception:
+                        pass
 
-        bootstrap_results = await asyncio.to_thread(
-            bootstrap_all_columns, 
-            without_product_df, 
-            with_product_df, 
-            500
-        )
+        bootstrap_results = bootstrap_all_columns(without_product_df, with_product_df, 1000)    
 
-        nan_inf_dict = {np.nan: None, np.inf: None, -np.inf: None}
-        with_product_df = with_product_df.replace(nan_inf_dict)
-        without_product_df = without_product_df.replace(nan_inf_dict)
+        replacement_dict = {np.nan: None, np.inf: None, -np.inf: None}
+        with_product_df = with_product_df.replace(replacement_dict)
+        without_product_df = without_product_df.replace(replacement_dict)
         
         return {
             "message": "Dependency model saved successfully",
