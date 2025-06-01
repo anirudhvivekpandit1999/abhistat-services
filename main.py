@@ -467,7 +467,7 @@ async def save_dependency_model(
                 except Exception:
                     pass
 
-        bootstrap_results = bootstrap_all_columns(without_product_df, with_product_df, 500)    
+        bootstrap_results = bootstrap_all_columns(without_product_df, with_product_df, 4)    
 
         with_product_df = with_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         without_product_df = without_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
