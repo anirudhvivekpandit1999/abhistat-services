@@ -16,7 +16,7 @@ FILE_EXPIRATION = 86400
 # logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
-def read_file(file: UploadFile) -> pd.DataFrame:
+def read_file(file: UploadFile, sheet_name: str = None) -> pd.DataFrame:
     content = file.file.read()
     file.file.seek(0)
 
@@ -26,7 +26,10 @@ def read_file(file: UploadFile) -> pd.DataFrame:
         if filename.endswith(".csv"):
             return pd.read_csv(io.BytesIO(content), low_memory=False)
         elif filename.endswith((".xls", ".xlsx")):
-            return pd.read_excel(io.BytesIO(content))
+            if sheet_name:
+                return pd.read_excel(io.BytesIO(content), sheet_name=sheet_name)
+            else:
+                return pd.read_excel(io.BytesIO(content))
         elif filename.endswith(".parquet"):
             return pd.read_parquet(io.BytesIO(content))
         else:

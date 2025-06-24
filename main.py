@@ -158,6 +158,8 @@ async def process_files(
     file2: UploadFile = File(...),
     remove_unnamed: bool = Form(False),
     remove_mismatched: bool = Form(False),
+    sheet1: Optional[str] = Form(None),
+    sheet2: Optional[str] = Form(None),
     session_id: Optional[str] = Cookie(None),
     response: Response = None,
 ):
@@ -197,8 +199,8 @@ async def process_files(
         file2.file.seek(0)
 
         # logging.info("Reading files into DataFrames")
-        df1 = read_file(file1)
-        df2 = read_file(file2)
+        df1 = read_file(file1, sheet_name=sheet1)
+        df2 = read_file(file2, sheet_name=sheet2)
         # logging.info(f"Files read successfully: {file1.filename}, {file2.filename}")
 
         unnamed_cols_df1 = get_unnamed_columns(df1)
@@ -266,12 +268,14 @@ async def process_files(
                 "shape": df1.shape,
                 "columns": list(df1.columns),
                 "preview": df1_clean.head(10).to_dict(orient="records"),
+                "data": df1_clean.to_dict(orient="records"),
             },
             "file2_info": {
                 "filename": file2.filename,
                 "shape": df2.shape,
                 "columns": list(df2.columns),
                 "preview": df2_clean.head(10).to_dict(orient="records"),
+                "data": df2_clean.to_dict(orient="records"),
             },
         }
 
