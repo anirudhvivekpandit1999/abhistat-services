@@ -8,3 +8,5 @@ openpyxl
 chardet
 numexpr
 scikit-learn
+pymongo
+PyJWT

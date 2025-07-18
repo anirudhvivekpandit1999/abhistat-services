@@ -24,7 +24,6 @@ from typing import Optional, Dict, List
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel
-# import logging
 from utils import (
     read_file,
     get_unnamed_columns,
@@ -34,6 +33,15 @@ from utils import (
     validate_formula,
     bootstrap_all_columns
 )
+from pymongo import MongoClient
+from passlib.context import CryptContext
+import os
+from datetime import datetime, timedelta
+from pydantic import EmailStr
+from dotenv import load_dotenv
+import jwt
+import certifi
+# import logging
 
 TEMP_DIR = Path("./temp_files")
 TEMP_DIR.mkdir(exist_ok=True)
@@ -41,6 +49,30 @@ TEMP_DIR.mkdir(exist_ok=True)
 # logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 session_data_store = {}
+
+load_dotenv()
+
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
+mongo_client = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
+db = mongo_client['abhitech_stat_tool']
+external_users = db['external_users']
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SECRET_KEY = os.getenv('JWT_SECRET', 'supersecretkey')
+ALGORITHM = 'HS256'
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.now() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 class DependencyModelRequest(BaseModel):
     dependent_variables: List[str]
@@ -55,6 +87,20 @@ class CalculatedColumnRequest(BaseModel):
 class BatchCalculatedColumnsRequest(BaseModel):
     columns: List[CalculatedColumnRequest]
     session_id: Optional[str] = None
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: EmailStr
+    phone: str
+    password: str
+    confirm_password: str
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class GoogleLoginRequest(BaseModel):
+    token: str
 
 
 @asynccontextmanager
@@ -501,6 +547,56 @@ async def save_dependency_model(
     except Exception as e:
         # logging.exception("An unexpected error occurred while processing dependency model")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/register")
+async def register_user(data: RegisterRequest):
+    if data.password != data.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match.")
+    if external_users.find_one({"email": data.email}):
+        raise HTTPException(status_code=400, detail="Email already registered.")
+    user = {
+        "name": data.name,
+        "email": data.email,
+        "phone": data.phone,
+        "password": get_password_hash(data.password),
+        "created_at": datetime.now(),
+        "google_id": None
+    }
+    external_users.insert_one(user)
+    return {"message": "User registered successfully."}
+
+@app.post("/login")
+async def login_user(data: LoginRequest):
+    user = external_users.find_one({"email": data.email})
+    if not user or not verify_password(data.password, user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
+    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user["phone"], "access": "External" }, "message": "User logged in successfully"}
+
+@app.post("/google-login")
+async def google_login(data: GoogleLoginRequest):
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as greq
+    try:
+        idinfo = id_token.verify_oauth2_token(data.token, greq.Request())
+        email = idinfo["email"]
+        name = idinfo.get("name", "")
+        google_id = idinfo["sub"]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Google token.")
+    user = external_users.find_one({"email": email})
+    if not user:
+        user = {
+            "name": name,
+            "email": email,
+            "phone": "",
+            "password": None,
+            "created_at": datetime.now(),
+            "google_id": google_id
+        }
+        external_users.insert_one(user)
+    token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
+    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user.get("phone", "")}}
 
 
 if __name__ == "__main__":
