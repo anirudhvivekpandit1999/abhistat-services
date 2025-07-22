@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import logging
 import numpy as np
-from sklearn.utils import resample
+from sklearnutils import resample
 
 TEMP_DIR = Path("./temp_files")
 FILE_EXPIRATION = 86400
