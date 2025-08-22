@@ -4,9 +4,9 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 import re
-from Abhitech_Statistical_Tool_Backend.utils import validate_formula, process_formula
-from Abhitech_Statistical_Tool_Backend.api.session import get_session_data
-from Abhitech_Statistical_Tool_Backend.models.schemas import BatchCalculatedColumnsRequest
+from utils import validate_formula, process_formula
+from api.session import get_session_data
+from models.schemas import BatchCalculatedColumnsRequest
 
 router = APIRouter()
 

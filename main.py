@@ -3,11 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 import asyncio
-from Abhitech_Statistical_Tool_Backend.api.file_processing import router as file_processing_router
-from Abhitech_Statistical_Tool_Backend.api.calculated import router as calculated_router
-from Abhitech_Statistical_Tool_Backend.api.dependency import router as dependency_router
-from Abhitech_Statistical_Tool_Backend.api.auth import router as auth_router
-from Abhitech_Statistical_Tool_Backend.utils import cleanup_expired_files_periodically
+from api.file_processing import router as file_processing_router
+from api.calculated import router as calculated_router
+from api.dependency import router as dependency_router
+from api.auth import router as auth_router
+from utils import cleanup_expired_files_periodically
 
 
 @asynccontextmanager
