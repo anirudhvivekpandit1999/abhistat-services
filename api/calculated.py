@@ -4,9 +4,9 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 import re
-from utils import validate_formula, process_formula
-from api.session import get_session_data
-from models.schemas import BatchCalculatedColumnsRequest
+from Abhitech_Statistical_Tool_Backend.utils import validate_formula, process_formula
+from Abhitech_Statistical_Tool_Backend.api.session import get_session_data
+from Abhitech_Statistical_Tool_Backend.models.schemas import BatchCalculatedColumnsRequest
 
 router = APIRouter()
 
@@ -29,8 +29,8 @@ async def save_calculated_columns(
                 element["value"] for element in formula_elements if element["type"] == "column"
             )
             for column_value in unique_columns:
-                pattern = rf'(?<!\\[)\\b{re.escape(column_value)}\\b(?!\\])'
-                formula = re.sub(pattern, f'[{column_value}]', formula)
+                if f'[{column_value}]' not in formula:
+                    formula = formula.replace(column_value, f'[{column_value}]')
             if not column_name or not re.match(r"^[a-zA-Z0-9_]+$", column_name):
                 errors.append(f"Column name '{column_name}' can only contain letters, numbers and underscores")
                 continue
@@ -50,7 +50,7 @@ async def save_calculated_columns(
             if validation_errors_df2:
                 for error in validation_errors_df2:
                     errors.append(f"Formula for '{column_name}' in second dataset: {error}")
-                continue
+                continue  
         if errors:
             return JSONResponse(
                 status_code=400,
@@ -61,9 +61,12 @@ async def save_calculated_columns(
             column_name = column_request.column_name
             formula = column_request.formula
             formula_elements = column_request.formula_elements
-            for element in formula_elements:
-                if element["type"] == "column":
-                    column_value = element["value"]
+            
+            unique_columns = set(
+                element["value"] for element in formula_elements if element["type"] == "column"
+            )   
+            for column_value in unique_columns:
+                if f'[{column_value}]' not in formula:
                     formula = formula.replace(column_value, f'[{column_value}]')
             processed_formula = process_formula(formula)
             try:
@@ -78,7 +81,7 @@ async def save_calculated_columns(
                     if col in df1.columns:
                         df1.drop(columns=[col], inplace=True)
                     if col in df2.columns:
-                        df2.drop(columns=[col], inplace=True)
+                        df2.drop(columns=[col], inplace=True)      
                 return JSONResponse(
                     status_code=400,
                     content={"errors": [f"Error executing formula for '{column_name}': {str(e)}"]}
@@ -97,4 +100,4 @@ async def save_calculated_columns(
             }
         }
     except Exception as e:
-        return JSONResponse(status_code=500, content={"errors": [str(e)]}) 
+        return JSONResponse(status_code=500, content={"errors": [str(e)]})

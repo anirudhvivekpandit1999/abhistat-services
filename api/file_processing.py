@@ -4,9 +4,9 @@ from typing import Optional
 import uuid
 import shutil
 import numpy as np
-from core.config import TEMP_DIR
-from utils import read_file, get_unnamed_columns, get_mismatched_columns
-from api.session import session_data_store
+from Abhitech_Statistical_Tool_Backend.core.config import TEMP_DIR
+from Abhitech_Statistical_Tool_Backend.utils import read_file, get_unnamed_columns, get_mismatched_columns
+from Abhitech_Statistical_Tool_Backend.api.session import session_data_store
 
 router = APIRouter()
 

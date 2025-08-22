@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from typing import Dict
 import numpy as np
-from utils import bootstrap_all_columns
-from api.session import get_session_data
-from models.schemas import DependencyModelRequest
+from Abhitech_Statistical_Tool_Backend.utils import bootstrap_all_columns
+from Abhitech_Statistical_Tool_Backend.api.session import get_session_data
+from Abhitech_Statistical_Tool_Backend.models.schemas import DependencyModelRequest
 
 router = APIRouter()
 

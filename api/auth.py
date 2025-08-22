@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
-from models.schemas import RegisterRequest, LoginRequest, GoogleLoginRequest
-from core.db import external_users
-from core.security import get_password_hash, verify_password, create_access_token
+from Abhitech_Statistical_Tool_Backend.models.schemas import RegisterRequest, LoginRequest, GoogleLoginRequest
+from Abhitech_Statistical_Tool_Backend.core.db import external_users
+from Abhitech_Statistical_Tool_Backend.core.security import get_password_hash, verify_password, create_access_token
 
 router = APIRouter()
 
