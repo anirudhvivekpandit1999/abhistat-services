@@ -10,3 +10,6 @@ numexpr
 scikit-learn
 pymongo
 PyJWT
+google-auth
+python-dotenv
+passlib[bcrypt]

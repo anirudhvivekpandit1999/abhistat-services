@@ -3,7 +3,10 @@ from datetime import datetime
 from models.schemas import RegisterRequest, LoginRequest, GoogleLoginRequest
 from core.db import external_users
 from core.security import get_password_hash, verify_password, create_access_token
-
+from google.oauth2 import id_token
+from google.auth.transport import requests as greq
+from core.config import GOOGLE_CLIENT_ID
+    
 router = APIRouter()
 
 @router.post("/register")
@@ -33,15 +36,14 @@ async def login_user(data: LoginRequest):
 
 @router.post("/google-login")
 async def google_login(data: GoogleLoginRequest):
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as greq
     try:
-        idinfo = id_token.verify_oauth2_token(data.token, greq.Request())
+        idinfo = id_token.verify_oauth2_token(data.token, greq.Request(), GOOGLE_CLIENT_ID)
         email = idinfo["email"]
         name = idinfo.get("name", "")
         google_id = idinfo["sub"]
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid Google token.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Google token: {str(e)}")
+    
     user = external_users.find_one({"email": email})
     if not user:
         user = {
@@ -53,5 +55,6 @@ async def google_login(data: GoogleLoginRequest):
             "google_id": google_id
         }
         external_users.insert_one(user)
+    
     token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
-    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user.get("phone", "")}} 
+    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user.get("phone", ""), "access": "External"}} 
