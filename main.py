@@ -26,6 +26,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        "http://localhost:5174",
         "https://13.203.202.28",
         "https://abhistat.com",
         "https://www.abhistat.com",
