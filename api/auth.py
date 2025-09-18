@@ -23,14 +23,24 @@ async def register_user(data: RegisterRequest):
         "created_at": datetime.now(),
         "google_id": None
     }
-    external_users.insert_one(user)
-    return {"message": "User registered successfully."}
+    result = external_users.insert_one(user)
+    user["_id"] = result.inserted_id
+    
+    token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
+    return {
+        "access_token": token, 
+        "token_type": "bearer", 
+        "user": {"name": user["name"], "email": user["email"], "phone": user["phone"], "access": "External"}, 
+        "message": "User registered successfully."
+    }
 
 @router.post("/login")
 async def login_user(data: LoginRequest):
     user = external_users.find_one({"email": data.email})
-    if not user or not verify_password(data.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please sign up first.")
+    if not verify_password(data.password, user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid password.")
     token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
     return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user["phone"], "access": "External" }, "message": "User logged in successfully"}
 
@@ -46,15 +56,41 @@ async def google_login(data: GoogleLoginRequest):
     
     user = external_users.find_one({"email": email})
     if not user:
-        user = {
-            "name": name,
-            "email": email,
-            "phone": "",
-            "password": None,
-            "created_at": datetime.now(),
-            "google_id": google_id
-        }
-        external_users.insert_one(user)
+        raise HTTPException(status_code=404, detail="User not found. Please sign up first.")
+    
+    if not user.get("google_id"):
+        external_users.update_one(
+            {"_id": user["_id"]}, 
+            {"$set": {"google_id": google_id}}
+        )
     
     token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
-    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user.get("phone", ""), "access": "External"}} 
+    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user.get("phone", ""), "access": "External"}}
+
+@router.post("/google-signup")
+async def google_signup(data: GoogleLoginRequest):
+    try:
+        idinfo = id_token.verify_oauth2_token(data.token, greq.Request(), GOOGLE_CLIENT_ID)
+        email = idinfo["email"]
+        name = idinfo.get("name", "")
+        google_id = idinfo["sub"]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Google token: {str(e)}")
+    
+    existing_user = external_users.find_one({"email": email})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered. Please use login instead.")
+    
+    user = {
+        "name": name,
+        "email": email,
+        "phone": "",
+        "password": None,
+        "created_at": datetime.now(),
+        "google_id": google_id
+    }
+    result = external_users.insert_one(user)
+    user["_id"] = result.inserted_id
+    
+    token = create_access_token({"sub": str(user["_id"]), "email": user["email"]})
+    return {"access_token": token, "token_type": "bearer", "user": {"name": user["name"], "email": user["email"], "phone": user.get("phone", ""), "access": "External"}, "message": "User registered successfully via Google."} 

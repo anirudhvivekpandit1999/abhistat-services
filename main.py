@@ -7,6 +7,7 @@ from api.file_processing import router as file_processing_router
 from api.calculated import router as calculated_router
 from api.dependency import router as dependency_router
 from api.auth import router as auth_router
+from api.payments import router as payments_router
 from utils import cleanup_expired_files_periodically
 
 
@@ -58,6 +59,7 @@ app.include_router(file_processing_router)
 app.include_router(calculated_router)
 app.include_router(dependency_router)
 app.include_router(auth_router)
+app.include_router(payments_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

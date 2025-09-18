@@ -13,3 +13,4 @@ PyJWT
 google-auth
 python-dotenv
 passlib[bcrypt]
+razorpay
