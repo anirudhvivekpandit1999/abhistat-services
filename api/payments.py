@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from typing import Optional
 import os
 import razorpay
 import hmac
@@ -19,8 +20,8 @@ else:
 class CreateOrderRequest(BaseModel):
     amount_rupees: int = 1
     currency: str = "INR"
-    receipt: str | None = None
-    notes: dict | None = None
+    receipt: Optional[str] = None
+    notes: Optional[dict] = None
 
 
 @router.post("/create-order")
