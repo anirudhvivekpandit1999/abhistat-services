@@ -1,10 +1,9 @@
 module.exports = {
   apps: [{
     name: 'statistical-tool-backend',
-    script: 'venv/bin/uvicorn',
-    args: 'main:app --host 0.0.0.0 --port 8000 --workers 4',
-    interpreter: 'none',
-    cwd: process.env.HOME + '/root/Abhitech_Statistical_Tool_Backend',
+    script: './start.sh',
+    interpreter: 'bash',
+    cwd: '/root/Abhitech_Statistical_Tool_Backend',
     instances: 1,
     exec_mode: 'fork',
     env: {
