@@ -159,35 +159,51 @@ def bootstrap_all_columns(df_before, df_after, n_bootstraps=10000):
             if not np.issubdtype(data_before.dtype, np.number):
                 continue
 
+            if len(data_before) < 2 or len(data_after) < 2:
+                continue
+
             bootstrapped_differences = []
             for _ in range(n_bootstraps):
                 sample_before = resample(data_before)
                 sample_after = resample(data_after)
-                bootstrapped_differences.append(np.mean(sample_after) - np.mean(sample_before))
+                diff = np.mean(sample_after) - np.mean(sample_before)
+                if np.isfinite(diff):
+                    bootstrapped_differences.append(diff)
+
+            if len(bootstrapped_differences) == 0:
+                continue
 
             lower_bound = np.percentile(bootstrapped_differences, 2.5)
             upper_bound = np.percentile(bootstrapped_differences, 97.5)
             mean_difference = np.mean(bootstrapped_differences)
             std_difference = np.std(bootstrapped_differences, ddof=1)
             
+            def safe_float(value):
+                if value is None or (isinstance(value, float) and (np.isnan(value) or np.isinf(value))):
+                    return None
+                return round(float(value), 3) if value is not None else None
+            
             column_result = {
                 "column": column,
-                "mean_difference": round(float(mean_difference), 3),
-                "standard_deviation": round(float(std_difference), 3),
+                "mean_difference": safe_float(mean_difference),
+                "standard_deviation": safe_float(std_difference),
                 "confidence_interval": {
-                    "lower_bound": round(float(lower_bound), 3),
-                    "upper_bound": round(float(upper_bound), 3)
+                    "lower_bound": safe_float(lower_bound),
+                    "upper_bound": safe_float(upper_bound)
                 },
-                "is_significant": bool(lower_bound > 0 or upper_bound < 0)
+                "is_significant": bool(lower_bound > 0 or upper_bound < 0) if np.isfinite(lower_bound) and np.isfinite(upper_bound) else False
             }
 
-            if lower_bound > 0 or upper_bound < 0:
-                significant_impact.append(column_result)
-            else:
-                no_significant_impact.append(column_result)
+            if all(v is not None for v in [column_result["mean_difference"], column_result["standard_deviation"], 
+                                          column_result["confidence_interval"]["lower_bound"], 
+                                          column_result["confidence_interval"]["upper_bound"]]):
+                if lower_bound > 0 or upper_bound < 0:
+                    significant_impact.append(column_result)
+                else:
+                    no_significant_impact.append(column_result)
                         
         except Exception as e:
-            # logging.error(f"Error processing column '{column}': {e}")
+            logging.error(f"Error processing column '{column}': {e}")
             continue
             
     return {
