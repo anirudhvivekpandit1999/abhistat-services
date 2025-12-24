@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from typing import Dict
 import numpy as np
+import traceback
+import logging
 from utils import bootstrap_all_columns
 from api.session import get_session_data
 from models.schemas import DependencyModelRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 @router.post("/save-dependency-model")
 async def save_dependency_model(
@@ -70,4 +73,8 @@ async def save_dependency_model(
             "bootstrap_analysis": bootstrap_results
         }
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)}) 
+        logger.error(f"Error saving dependency model: {str(e)}\n{traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500, 
+            content={"error": str(e), "detail": traceback.format_exc()}
+        ) 
