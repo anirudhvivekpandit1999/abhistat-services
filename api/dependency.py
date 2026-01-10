@@ -101,16 +101,8 @@ async def save_dependency_model(
         with_product_df = with_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         without_product_df = without_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         
-        preview_with_product = with_product_df.head(100).to_dict(orient="records")
-        preview_without_product = without_product_df.head(100).to_dict(orient="records")
-        
-        with_product_size = len(str(preview_with_product))
-        without_product_size = len(str(preview_without_product))
-        
-        if with_product_size > 5 * 1024 * 1024:
-            preview_with_product = with_product_df.head(50).to_dict(orient="records")
-        if without_product_size > 5 * 1024 * 1024:
-            preview_without_product = without_product_df.head(50).to_dict(orient="records")
+        preview_with_product = with_product_df.to_dict(orient="records")
+        preview_without_product = without_product_df.to_dict(orient="records")
         
         return {
             "message": "Dependency model saved successfully",
