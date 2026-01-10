@@ -3,18 +3,73 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from core.db import db
 import logging
+import pickle
+import base64
+import pandas as pd
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 sessions_collection = db['sessions']
 SESSION_EXPIRY_HOURS = 24
 
+def serialize_dataframe(df):
+    if isinstance(df, pd.DataFrame):
+        return {
+            "_type": "dataframe",
+            "_data": base64.b64encode(pickle.dumps(df)).decode('utf-8')
+        }
+    return df
+
+def deserialize_dataframe(data):
+    if isinstance(data, dict) and data.get("_type") == "dataframe":
+        return pickle.loads(base64.b64decode(data["_data"].encode('utf-8')))
+    return data
+
+def serialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    serialized = {}
+    for key, value in data.items():
+        if isinstance(value, pd.DataFrame):
+            serialized[key] = serialize_dataframe(value)
+        elif isinstance(value, dict):
+            serialized[key] = serialize_session_data(value)
+        elif isinstance(value, list):
+            serialized[key] = [
+                serialize_dataframe(item) if isinstance(item, pd.DataFrame) else item
+                for item in value
+            ]
+        elif isinstance(value, (np.integer, np.floating)):
+            serialized[key] = value.item()
+        elif isinstance(value, np.ndarray):
+            serialized[key] = value.tolist()
+        else:
+            serialized[key] = value
+    return serialized
+
+def deserialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    deserialized = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            if value.get("_type") == "dataframe":
+                deserialized[key] = deserialize_dataframe(value)
+            else:
+                deserialized[key] = deserialize_session_data(value)
+        elif isinstance(value, list):
+            deserialized[key] = [
+                deserialize_dataframe(item) if isinstance(item, dict) and item.get("_type") == "dataframe" else item
+                for item in value
+            ]
+        else:
+            deserialized[key] = value
+    return deserialized
+
 def create_session(session_id: str, data: Dict[str, Any]) -> bool:
     try:
         expiry = datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
+        serialized_data = serialize_session_data(data)
         session_doc = {
             "_id": session_id,
-            "data": data,
+            "data": serialized_data,
             "created_at": datetime.now(),
             "expires_at": expiry,
             "last_accessed": datetime.now()
@@ -44,7 +99,8 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
             {"$set": {"last_accessed": datetime.now()}}
         )
         
-        return session_doc.get("data")
+        serialized_data = session_doc.get("data", {})
+        return deserialize_session_data(serialized_data)
     except Exception as e:
         logger.error(f"Error getting session {session_id}: {str(e)}")
         return None
@@ -60,11 +116,12 @@ def update_session(session_id: str, data: Dict[str, Any]) -> bool:
             return False
         
         expiry = datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
+        serialized_data = serialize_session_data(data)
         sessions_collection.update_one(
             {"_id": session_id},
             {
                 "$set": {
-                    "data": data,
+                    "data": serialized_data,
                     "last_accessed": datetime.now(),
                     "expires_at": expiry
                 }
