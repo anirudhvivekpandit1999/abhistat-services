@@ -90,7 +90,11 @@ async def process_files(
             "calculated_columns": [],
         }
         
-        create_session(session_id, session_data)
+        if not create_session(session_id, session_data):
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to create session. Please try again."}
+            )
         
         preview1 = df1_clean.head(10).to_dict(orient="records")
         preview2 = df2_clean.head(10).to_dict(orient="records")

@@ -74,7 +74,11 @@ async def save_dependency_model(
         effective_session_id = cookie_session_id or header_session_id or data.session_id
         
         if effective_session_id:
-            update_session(effective_session_id, session_data)
+            if not update_session(effective_session_id, session_data):
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Failed to update session. Please try again."}
+                )
         without_product_df = df1
         with_product_df = df2
         for col in with_product_df.columns:

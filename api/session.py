@@ -39,11 +39,16 @@ def serialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
                 for item in value
             ]
         elif isinstance(value, (np.integer, np.floating)):
-            serialized[key] = value.item()
+            serialized[key] = float(value.item()) if isinstance(value, np.floating) else int(value.item())
         elif isinstance(value, np.ndarray):
             serialized[key] = value.tolist()
+        elif pd.isna(value):
+            serialized[key] = None
         else:
-            serialized[key] = value
+            try:
+                serialized[key] = value
+            except Exception:
+                serialized[key] = str(value)
     return serialized
 
 def deserialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -155,6 +160,7 @@ async def get_session_data(
     body_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     effective_session_id = None
+    session_data = None
     
     cookie_val = session_id
     header_val = x_session_id
@@ -197,7 +203,7 @@ async def get_session_data(
         except Exception:
             pass
     
-    if not effective_session_id:
+    if not effective_session_id or not session_data:
         raise HTTPException(
             status_code=401,
             detail={
@@ -206,4 +212,4 @@ async def get_session_data(
             }
         )
     
-    return get_session(effective_session_id)
+    return session_data

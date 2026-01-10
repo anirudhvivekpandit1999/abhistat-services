@@ -124,7 +124,11 @@ async def save_calculated_columns(
         session_data["calculated_columns"].extend(processed_columns)
         
         if effective_session_id:
-            update_session(effective_session_id, session_data)
+            if not update_session(effective_session_id, session_data):
+                return JSONResponse(
+                    status_code=500,
+                    content={"errors": ["Failed to update session. Please try again."]}
+                )
         df1_preview = df1[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
         df2_preview = df2[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
         return {
