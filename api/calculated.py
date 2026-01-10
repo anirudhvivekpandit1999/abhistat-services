@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Dict
 import numpy as np
@@ -14,13 +14,42 @@ router = APIRouter()
 async def save_calculated_columns(
     request: Request,
     data: BatchCalculatedColumnsRequest,
-    session_data: Dict = Depends(get_session_data)
 ):
     try:
-        df1 = session_data["df1"]
-        df2 = session_data["df2"]
+        cookie_session_id = request.cookies.get("session_id")
+        header_session_id = request.headers.get("X-Session-ID")
+        session_data = await get_session_data(
+            request, 
+            session_id=cookie_session_id,
+            x_session_id=header_session_id,
+            body_session_id=data.session_id
+        )
+    except HTTPException as session_error:
+        if session_error.status_code == 401:
+            return JSONResponse(
+                status_code=401,
+                content=session_error.detail
+            )
+        raise
+    except Exception:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": "Session not found or expired. Please upload files first."
+            }
+        )
+    
+    try:
+        df1 = session_data["df1"].copy()
+        df2 = session_data["df2"].copy()
         new_columns = []
         errors = []
+        
+        if not data.columns or len(data.columns) == 0:
+            return JSONResponse(
+                status_code=400,
+                content={"errors": ["No columns provided. Please add at least one calculated column."]}
+            )
         for column_request in data.columns:
             column_name = column_request.column_name
             formula = column_request.formula
@@ -86,9 +115,11 @@ async def save_calculated_columns(
                     status_code=400,
                     content={"errors": [f"Error executing formula for '{column_name}': {str(e)}"]}
                 )
-        session_data["df1"] = df1
-        session_data["df2"] = df2
-        session_data["calculated_columns"] = processed_columns
+        session_data["df1"] = df1.copy()
+        session_data["df2"] = df2.copy()
+        if "calculated_columns" not in session_data:
+            session_data["calculated_columns"] = []
+        session_data["calculated_columns"].extend(processed_columns)
         df1_preview = df1[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
         df2_preview = df2[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
         return {

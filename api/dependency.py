@@ -17,17 +17,51 @@ async def save_dependency_model(
     session_data: Dict = Depends(get_session_data)
 ):
     try:
-        df1 = session_data["df1"].copy()
-        df2 = session_data["df2"].copy()
-        file1_name = session_data["file1_name"]
-        file2_name = session_data["file2_name"]
-        all_columns = set(df1.columns)
-        requested_columns = set(data.dependent_variables + data.independent_variables)
-        missing_columns = requested_columns - all_columns
-        if missing_columns:
+        df1 = session_data.get("df1")
+        df2 = session_data.get("df2")
+        
+        if df1 is None or df2 is None:
             return JSONResponse(
                 status_code=400,
-                content={"error": f"The following columns were not found in the dataset: {', '.join(missing_columns)}"}
+                content={"error": "Session data is missing. Please upload files first."}
+            )
+        
+        df1 = df1.copy()
+        df2 = df2.copy()
+        file1_name = session_data.get("file1_name", "file1")
+        file2_name = session_data.get("file2_name", "file2")
+        
+        all_columns_df1 = set(df1.columns)
+        all_columns_df2 = set(df2.columns)
+        all_columns = all_columns_df1.union(all_columns_df2)
+        
+        calculated_columns = [col["name"] for col in session_data.get("calculated_columns", [])]
+        
+        requested_columns = set(data.dependent_variables + data.independent_variables)
+        missing_in_df1 = requested_columns - all_columns_df1
+        missing_in_df2 = requested_columns - all_columns_df2
+        missing_in_both = missing_in_df1.intersection(missing_in_df2)
+        missing_in_either = requested_columns - all_columns
+        
+        if missing_in_either:
+            error_messages = []
+            if missing_in_both:
+                error_messages.append(f"The following columns were not found in either dataset: {', '.join(sorted(missing_in_both))}")
+            if missing_in_df1 - missing_in_both:
+                error_messages.append(f"The following columns were not found in the first dataset: {', '.join(sorted(missing_in_df1 - missing_in_both))}")
+            if missing_in_df2 - missing_in_both:
+                error_messages.append(f"The following columns were not found in the second dataset: {', '.join(sorted(missing_in_df2 - missing_in_both))}")
+            
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": " | ".join(error_messages),
+                    "available_columns": sorted(list(all_columns)),
+                    "calculated_columns": calculated_columns,
+                    "df1_columns": sorted(list(all_columns_df1)),
+                    "df2_columns": sorted(list(all_columns_df2)),
+                    "requested_columns": sorted(list(requested_columns))
+                }
             )
         session_data["dependency_model"] = {
             "dependent_variables": data.dependent_variables,
