@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from typing import Dict
 import numpy as np
+import pandas as pd
 import traceback
 import logging
 from utils import bootstrap_all_columns
@@ -79,21 +80,24 @@ async def save_dependency_model(
                     status_code=500,
                     content={"error": "Failed to update session. Please try again."}
                 )
-        without_product_df = df1
-        with_product_df = df2
+        without_product_df = df1.copy()
+        with_product_df = df2.copy()
+        
         for col in with_product_df.columns:
             if with_product_df[col].dtype == 'object':
                 try:
-                    with_product_df[col] = with_product_df[col].astype(float)
+                    with_product_df[col] = pd.to_numeric(with_product_df[col], errors='coerce')
                 except Exception:
                     pass
+        
         for col in without_product_df.columns:
             if without_product_df[col].dtype == 'object':
                 try:
-                    without_product_df[col] = without_product_df[col].astype(float)
+                    without_product_df[col] = pd.to_numeric(without_product_df[col], errors='coerce')
                 except Exception:
                     pass
-        bootstrap_results = bootstrap_all_columns(without_product_df, with_product_df, 100)
+        
+        bootstrap_results = bootstrap_all_columns(without_product_df.copy(), with_product_df.copy(), 100)
         with_product_df = with_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         without_product_df = without_product_df.replace({np.nan: None, np.inf: None, -np.inf: None})
         

@@ -153,10 +153,18 @@ def bootstrap_all_columns(df_before, df_after, n_bootstraps=10000):
 
     for column in common_columns:
         try:
+            if not np.issubdtype(df_before[column].dtype, np.number) and not np.issubdtype(df_after[column].dtype, np.number):
+                continue
+            
+            if df_before[column].dtype == 'object':
+                df_before[column] = pd.to_numeric(df_before[column], errors='coerce')
+            if df_after[column].dtype == 'object':
+                df_after[column] = pd.to_numeric(df_after[column], errors='coerce')
+            
             data_before = df_before[column].dropna()
             data_after = df_after[column].dropna()
-
-            if not np.issubdtype(data_before.dtype, np.number):
+            
+            if not np.issubdtype(data_before.dtype, np.number) or not np.issubdtype(data_after.dtype, np.number):
                 continue
 
             if len(data_before) < 2 or len(data_after) < 2:
