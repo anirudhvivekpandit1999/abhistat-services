@@ -13,17 +13,31 @@ from api.dependency import router as dependency_router
 from api.auth import router as auth_router
 from api.payments import router as payments_router
 from utils import cleanup_expired_files_periodically
+from api.session import cleanup_expired_sessions
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    cleanup_task = asyncio.create_task(cleanup_expired_files_periodically())
+    async def cleanup_loop():
+        while True:
+            try:
+                cleanup_expired_sessions()
+                await asyncio.sleep(3600)
+            except Exception as e:
+                logger.error(f"Error in cleanup loop: {str(e)}")
+                await asyncio.sleep(3600)
+    
+    cleanup_files_task = asyncio.create_task(cleanup_expired_files_periodically())
+    cleanup_sessions_task = asyncio.create_task(cleanup_loop())
     yield
-    cleanup_task.cancel()
+    cleanup_files_task.cancel()
+    cleanup_sessions_task.cancel()
     try:
-        await cleanup_task
+        await cleanup_files_task
+        await cleanup_sessions_task
     except asyncio.CancelledError:
         pass
 

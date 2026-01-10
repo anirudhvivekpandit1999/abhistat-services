@@ -4,9 +4,10 @@ from typing import Optional
 import uuid
 import shutil
 import numpy as np
+import os
 from core.config import TEMP_DIR
 from utils import read_file, get_unnamed_columns, get_mismatched_columns
-from api.session import session_data_store
+from api.session import create_session, update_session
 
 router = APIRouter()
 
@@ -23,12 +24,15 @@ async def process_files(
 ):
     if not session_id:
         session_id = str(uuid.uuid4())
+        is_production = os.getenv('ENVIRONMENT', 'production').lower() == 'production'
         response.set_cookie(
             key="session_id",
             value=session_id,
-            httponly=False,
+            httponly=True,
             samesite="lax",
-            max_age=86400
+            secure=is_production,
+            max_age=86400,
+            path="/"
         )
     session_dir = TEMP_DIR / session_id
     session_dir.mkdir(exist_ok=True)
@@ -77,13 +81,25 @@ async def process_files(
             df2[numeric_cols_df2] = df2[numeric_cols_df2].round(3)
         df1_clean = df1.replace({np.nan: None, np.inf: None, -np.inf: None})
         df2_clean = df2.replace({np.nan: None, np.inf: None, -np.inf: None})
-        session_data_store[session_id] = {
+        
+        session_data = {
             "df1": df1,
             "df2": df2,
             "file1_name": file1.filename,
             "file2_name": file2.filename,
             "calculated_columns": [],
         }
+        
+        create_session(session_id, session_data)
+        
+        preview1 = df1_clean.head(10).to_dict(orient="records")
+        preview2 = df2_clean.head(10).to_dict(orient="records")
+        
+        total_size_estimate = len(str(preview1)) + len(str(preview2))
+        if total_size_estimate > 5 * 1024 * 1024:
+            preview1 = df1_clean.head(5).to_dict(orient="records")
+            preview2 = df2_clean.head(5).to_dict(orient="records")
+        
         return {
             "message": "Files processed successfully",
             "session_id": session_id,
@@ -91,15 +107,15 @@ async def process_files(
                 "filename": file1.filename,
                 "shape": df1.shape,
                 "columns": list(df1.columns),
-                "preview": df1_clean.head(10).to_dict(orient="records"),
-                "data": df1_clean.to_dict(orient="records"),
+                "preview": preview1,
+                "data": preview1,
             },
             "file2_info": {
                 "filename": file2.filename,
                 "shape": df2.shape,
                 "columns": list(df2.columns),
-                "preview": df2_clean.head(10).to_dict(orient="records"),
-                "data": df2_clean.to_dict(orient="records"),
+                "preview": preview2,
+                "data": preview2,
             },
         }
     except Exception as e:
@@ -107,4 +123,4 @@ async def process_files(
             temp_file1_path.unlink()
         if temp_file2_path.exists():
             temp_file2_path.unlink()
-        return JSONResponse(status_code=500, content={"error": str(e)}) 
+        return JSONResponse(status_code=500, content={"error": str(e)})

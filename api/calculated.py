@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import re
 from utils import validate_formula, process_formula
-from api.session import get_session_data
+from api.session import get_session_data, update_session
 from models.schemas import BatchCalculatedColumnsRequest
 
 router = APIRouter()
@@ -24,6 +24,7 @@ async def save_calculated_columns(
             x_session_id=header_session_id,
             body_session_id=data.session_id
         )
+        effective_session_id = cookie_session_id or header_session_id or data.session_id
     except HTTPException as session_error:
         if session_error.status_code == 401:
             return JSONResponse(
@@ -35,7 +36,8 @@ async def save_calculated_columns(
         return JSONResponse(
             status_code=401,
             content={
-                "error": "Session not found or expired. Please upload files first."
+                "error": "Session not found or expired. Please upload files first.",
+                "code": "SESSION_NOT_FOUND"
             }
         )
     
@@ -120,6 +122,9 @@ async def save_calculated_columns(
         if "calculated_columns" not in session_data:
             session_data["calculated_columns"] = []
         session_data["calculated_columns"].extend(processed_columns)
+        
+        if effective_session_id:
+            update_session(effective_session_id, session_data)
         df1_preview = df1[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
         df2_preview = df2[new_columns].head(5).replace({np.nan: None, np.inf: None, -np.inf: None}) if new_columns else pd.DataFrame()
         return {
