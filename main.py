@@ -90,9 +90,19 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    error_details = []
+    for error in exc.errors():
+        field = ".".join(str(loc) for loc in error.get("loc", []))
+        msg = error.get("msg", "Validation error")
+        error_details.append(f"{field}: {msg}")
+    
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"error": "Validation error", "detail": exc.errors()}
+        content={
+            "error": "Validation error",
+            "detail": error_details,
+            "errors": exc.errors()
+        }
     )
 
 app.include_router(file_processing_router)
