@@ -25,7 +25,7 @@ def read_file(file: UploadFile, sheet_name: str = None) -> pd.DataFrame:
     try:
         if filename.endswith(".csv"):
             return pd.read_csv(io.BytesIO(content), low_memory=False)
-        elif filename.endswith((".xls", ".xlsx")):
+        elif filename.endswith((".xls", ".xlsx", ".xlsm")):
             if sheet_name:
                 return pd.read_excel(io.BytesIO(content), sheet_name=sheet_name)
             else:
