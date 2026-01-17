@@ -2,41 +2,85 @@ from fastapi import Request, Cookie, Header, HTTPException
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from core.db import db
+from core.config import TEMP_DIR
+from pathlib import Path
 import logging
 import pickle
 import base64
 import pandas as pd
 import numpy as np
+import shutil
 
 logger = logging.getLogger(__name__)
 
 sessions_collection = db['sessions']
 SESSION_EXPIRY_HOURS = 24
 
-def serialize_dataframe(df):
+def save_dataframe_to_disk(session_id: str, key: str, df: pd.DataFrame) -> str:
+    """Save dataframe to parquet file and return the path."""
+    session_dir = TEMP_DIR / session_id
+    session_dir.mkdir(exist_ok=True)
+    parquet_path = session_dir / f"{key}.parquet"
+    df.to_parquet(parquet_path, compression='snappy', index=False)
+    return str(parquet_path)
+
+def load_dataframe_from_disk(file_path: str) -> Optional[pd.DataFrame]:
+    """Load dataframe from parquet file."""
+    try:
+        path = Path(file_path)
+        if path.exists():
+            return pd.read_parquet(path)
+        else:
+            logger.warning(f"Dataframe file not found: {file_path}")
+            return None
+    except Exception as e:
+        logger.error(f"Error loading dataframe from {file_path}: {str(e)}")
+        return None
+
+def serialize_dataframe(df, session_id: str = None, key: str = None):
+    """Serialize dataframe - now saves to disk instead of pickling."""
     if isinstance(df, pd.DataFrame):
-        return {
-            "_type": "dataframe",
-            "_data": base64.b64encode(pickle.dumps(df)).decode('utf-8')
-        }
+        if session_id and key:
+            file_path = save_dataframe_to_disk(session_id, key, df)
+            return {
+                "_type": "dataframe_path",
+                "_path": file_path
+            }
+        else:
+            return {
+                "_type": "dataframe",
+                "_data": base64.b64encode(pickle.dumps(df)).decode('utf-8')
+            }
     return df
 
 def deserialize_dataframe(data):
-    if isinstance(data, dict) and data.get("_type") == "dataframe":
-        return pickle.loads(base64.b64decode(data["_data"].encode('utf-8')))
+    """Deserialize dataframe - loads from parquet or unpickles."""
+    if isinstance(data, dict):
+        if data.get("_type") == "dataframe_path":
+            file_path = data.get("_path")
+            if file_path:
+                df = load_dataframe_from_disk(file_path)
+                if df is not None:
+                    return df
+                else:
+                    logger.error(f"Failed to load dataframe from {file_path}")
+                    raise ValueError(f"Dataframe file not found: {file_path}")
+        elif data.get("_type") == "dataframe":
+            return pickle.loads(base64.b64decode(data["_data"].encode('utf-8')))
     return data
 
-def serialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
+def serialize_session_data(data: Dict[str, Any], session_id: str = None) -> Dict[str, Any]:
     serialized = {}
     for key, value in data.items():
         if isinstance(value, pd.DataFrame):
-            serialized[key] = serialize_dataframe(value)
+
+            serialized[key] = serialize_dataframe(value, session_id, key)
         elif isinstance(value, dict):
-            serialized[key] = serialize_session_data(value)
+            serialized[key] = serialize_session_data(value, session_id)
         elif isinstance(value, list):
             serialized[key] = [
-                serialize_dataframe(item) if isinstance(item, pd.DataFrame) else item
-                for item in value
+                serialize_dataframe(item, session_id, f"{key}_{i}") if isinstance(item, pd.DataFrame) else item
+                for i, item in enumerate(value)
             ]
         elif isinstance(value, (np.integer, np.floating)):
             serialized[key] = float(value.item()) if isinstance(value, np.floating) else int(value.item())
@@ -55,13 +99,13 @@ def deserialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
     deserialized = {}
     for key, value in data.items():
         if isinstance(value, dict):
-            if value.get("_type") == "dataframe":
+            if value.get("_type") in ("dataframe", "dataframe_path"):
                 deserialized[key] = deserialize_dataframe(value)
             else:
                 deserialized[key] = deserialize_session_data(value)
         elif isinstance(value, list):
             deserialized[key] = [
-                deserialize_dataframe(item) if isinstance(item, dict) and item.get("_type") == "dataframe" else item
+                deserialize_dataframe(item) if isinstance(item, dict) and item.get("_type") in ("dataframe", "dataframe_path") else item
                 for item in value
             ]
         else:
@@ -71,7 +115,7 @@ def deserialize_session_data(data: Dict[str, Any]) -> Dict[str, Any]:
 def create_session(session_id: str, data: Dict[str, Any]) -> bool:
     try:
         expiry = datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
-        serialized_data = serialize_session_data(data)
+        serialized_data = serialize_session_data(data, session_id)
         session_doc = {
             "_id": session_id,
             "data": serialized_data,
@@ -121,7 +165,13 @@ def update_session(session_id: str, data: Dict[str, Any]) -> bool:
             return False
         
         expiry = datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
-        serialized_data = serialize_session_data(data)
+        serialized_data = serialize_session_data(data, session_id)
+        
+        test_doc = {"data": serialized_data}
+        test_size = len(str(test_doc))
+        if test_size > 15 * 1024 * 1024:
+            logger.warning(f"Session {session_id} data is very large ({test_size} bytes), but should be under 16MB with parquet storage")
+        
         sessions_collection.update_one(
             {"_id": session_id},
             {
@@ -140,6 +190,12 @@ def update_session(session_id: str, data: Dict[str, Any]) -> bool:
 def delete_session(session_id: str) -> bool:
     try:
         sessions_collection.delete_one({"_id": session_id})
+        session_dir = TEMP_DIR / session_id
+        if session_dir.exists():
+            try:
+                shutil.rmtree(session_dir)
+            except Exception as e:
+                logger.warning(f"Error deleting session directory {session_dir}: {str(e)}")
         return True
     except Exception as e:
         logger.error(f"Error deleting session {session_id}: {str(e)}")
@@ -147,6 +203,19 @@ def delete_session(session_id: str) -> bool:
 
 def cleanup_expired_sessions():
     try:
+        expired_sessions = sessions_collection.find({"expires_at": {"$lt": datetime.now()}})
+        deleted_count = 0
+        for session in expired_sessions:
+            session_id = session.get("_id")
+            if session_id:
+                session_dir = TEMP_DIR / session_id
+                if session_dir.exists():
+                    try:
+                        shutil.rmtree(session_dir)
+                    except Exception as e:
+                        logger.warning(f"Error deleting session directory {session_dir}: {str(e)}")
+                deleted_count += 1
+        
         result = sessions_collection.delete_many({"expires_at": {"$lt": datetime.now()}})
         return result.deleted_count
     except Exception as e:
