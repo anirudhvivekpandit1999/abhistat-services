@@ -17,15 +17,50 @@ sessions_collection = db['sessions']
 SESSION_EXPIRY_HOURS = 24
 
 def save_dataframe_to_disk(session_id: str, key: str, df: pd.DataFrame) -> str:
-    """Save dataframe to parquet file and return the path."""
     session_dir = TEMP_DIR / session_id
     session_dir.mkdir(exist_ok=True)
     parquet_path = session_dir / f"{key}.parquet"
-    df.to_parquet(parquet_path, compression='snappy', index=False)
+
+    df_to_save = df.copy()
+    
+    df_to_save = df_to_save.replace([np.inf, -np.inf], None)
+    
+    for col in df_to_save.columns:
+        try:
+            if df_to_save[col].dtype == 'object':
+                df_to_save[col] = df_to_save[col].astype(str)
+                df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN', 'nan'], None)
+            else:
+                non_null = df_to_save[col].dropna()
+                if len(non_null) > 0:
+                    numeric_series = pd.to_numeric(df_to_save[col], errors='coerce')
+                    original_nulls = df_to_save[col].isna().sum()
+                    converted_nulls = numeric_series.isna().sum()
+                    if converted_nulls > original_nulls:
+                        df_to_save[col] = df_to_save[col].astype(str)
+                        df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN'], None)
+        except Exception as e:
+            logger.warning(f"Error processing column {col} for parquet save: {str(e)}. Converting to string.")
+            df_to_save[col] = df_to_save[col].astype(str)
+            df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN'], None)
+    
+    try:
+        df_to_save.to_parquet(parquet_path, compression='snappy', index=False, engine='pyarrow')
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error saving dataframe to parquet: {error_msg}")
+        if any(keyword in error_msg.lower() for keyword in ['convert', 'type', 'double', 'float', 'int']):
+            logger.info("Converting all columns to string due to type conversion error")
+            for col in df_to_save.columns:
+                df_to_save[col] = df_to_save[col].astype(str)
+                df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN'], None)
+            df_to_save.to_parquet(parquet_path, compression='snappy', index=False, engine='pyarrow')
+        else:
+            raise
+    
     return str(parquet_path)
 
 def load_dataframe_from_disk(file_path: str) -> Optional[pd.DataFrame]:
-    """Load dataframe from parquet file."""
     try:
         path = Path(file_path)
         if path.exists():
@@ -38,7 +73,6 @@ def load_dataframe_from_disk(file_path: str) -> Optional[pd.DataFrame]:
         return None
 
 def serialize_dataframe(df, session_id: str = None, key: str = None):
-    """Serialize dataframe - now saves to disk instead of pickling."""
     if isinstance(df, pd.DataFrame):
         if session_id and key:
             file_path = save_dataframe_to_disk(session_id, key, df)
@@ -54,7 +88,6 @@ def serialize_dataframe(df, session_id: str = None, key: str = None):
     return df
 
 def deserialize_dataframe(data):
-    """Deserialize dataframe - loads from parquet or unpickles."""
     if isinstance(data, dict):
         if data.get("_type") == "dataframe_path":
             file_path = data.get("_path")
