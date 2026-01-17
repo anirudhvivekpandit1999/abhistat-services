@@ -21,40 +21,50 @@ def save_dataframe_to_disk(session_id: str, key: str, df: pd.DataFrame) -> str:
     session_dir.mkdir(exist_ok=True)
     parquet_path = session_dir / f"{key}.parquet"
 
-    df_to_save = df.copy()
-    
+    df_to_save = df.copy(deep=False)
     df_to_save = df_to_save.replace([np.inf, -np.inf], None)
     
-    for col in df_to_save.columns:
-        try:
-            if df_to_save[col].dtype == 'object':
-                df_to_save[col] = df_to_save[col].astype(str)
-                df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN', 'nan'], None)
-            else:
-                non_null = df_to_save[col].dropna()
-                if len(non_null) > 0:
-                    numeric_series = pd.to_numeric(df_to_save[col], errors='coerce')
-                    original_nulls = df_to_save[col].isna().sum()
-                    converted_nulls = numeric_series.isna().sum()
-                    if converted_nulls > original_nulls:
-                        df_to_save[col] = df_to_save[col].astype(str)
-                        df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN'], None)
-        except Exception as e:
-            logger.warning(f"Error processing column {col} for parquet save: {str(e)}. Converting to string.")
-            df_to_save[col] = df_to_save[col].astype(str)
-            df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN'], None)
-    
     try:
-        df_to_save.to_parquet(parquet_path, compression='snappy', index=False, engine='pyarrow')
+        df_to_save.to_parquet(
+            parquet_path, 
+            compression='snappy', 
+            index=False, 
+            engine='pyarrow',
+            write_statistics=False
+        )
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Error saving dataframe to parquet: {error_msg}")
+        logger.debug(f"Parquet save failed for {key}: {error_msg}")
+        
         if any(keyword in error_msg.lower() for keyword in ['convert', 'type', 'double', 'float', 'int']):
-            logger.info("Converting all columns to string due to type conversion error")
-            for col in df_to_save.columns:
-                df_to_save[col] = df_to_save[col].astype(str)
-                df_to_save[col] = df_to_save[col].replace(['nan', '<NA>', 'None', 'NaN'], None)
-            df_to_save.to_parquet(parquet_path, compression='snappy', index=False, engine='pyarrow')
+            object_cols = df_to_save.select_dtypes(include=['object']).columns.tolist()
+            if object_cols:
+                for col in object_cols:
+                    df_to_save[col] = df_to_save[col].astype(str)
+                    mask = df_to_save[col].isin(['nan', '<NA>', 'None', 'NaN'])
+                    df_to_save.loc[mask, col] = None
+            
+            try:
+                df_to_save.to_parquet(
+                    parquet_path, 
+                    compression='snappy', 
+                    index=False, 
+                    engine='pyarrow',
+                    write_statistics=False
+                )
+            except Exception as e2:
+                logger.warning(f"Parquet save still failed after object conversion: {str(e2)}")
+                for col in df_to_save.columns:
+                    df_to_save[col] = df_to_save[col].astype(str)
+                    mask = df_to_save[col].isin(['nan', '<NA>', 'None', 'NaN'])
+                    df_to_save.loc[mask, col] = None
+                df_to_save.to_parquet(
+                    parquet_path, 
+                    compression='snappy', 
+                    index=False, 
+                    engine='pyarrow',
+                    write_statistics=False
+                )
         else:
             raise
     

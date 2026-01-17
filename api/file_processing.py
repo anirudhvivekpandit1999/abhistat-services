@@ -75,12 +75,15 @@ async def process_files(
             df2 = df2[common_columns]
         numeric_cols_df1 = df1.select_dtypes(include=[np.number]).columns
         numeric_cols_df2 = df2.select_dtypes(include=[np.number]).columns
-        if not numeric_cols_df1.empty:
+        if len(numeric_cols_df1) > 0:
             df1[numeric_cols_df1] = df1[numeric_cols_df1].round(3)
-        if not numeric_cols_df2.empty:
+        if len(numeric_cols_df2) > 0:
             df2[numeric_cols_df2] = df2[numeric_cols_df2].round(3)
-        df1_clean = df1.replace({np.nan: None, np.inf: None, -np.inf: None})
-        df2_clean = df2.replace({np.nan: None, np.inf: None, -np.inf: None})
+        
+        df1_clean = df1.copy(deep=False)
+        df2_clean = df2.copy(deep=False)
+        df1_clean = df1_clean.replace({np.nan: None, np.inf: None, -np.inf: None})
+        df2_clean = df2_clean.replace({np.nan: None, np.inf: None, -np.inf: None})
         
         session_data = {
             "df1": df1,
