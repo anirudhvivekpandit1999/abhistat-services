@@ -1,133 +1,240 @@
-from fastapi import APIRouter, File, UploadFile, Form, Cookie, Response
+from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
-from typing import Optional
 import uuid
 import shutil
 import numpy as np
 import os
+import traceback
+import pandas as pd
+
 from core.config import TEMP_DIR
-from utils import read_file, get_unnamed_columns, get_mismatched_columns
-from api.session import create_session, update_session
+from utils import get_unnamed_columns
 
 router = APIRouter()
 
-@router.post("/process-files")
-async def process_files(
-    file1: UploadFile = File(...),
-    file2: UploadFile = File(...),
-    remove_unnamed: bool = Form(False),
-    remove_mismatched: bool = Form(False),
-    sheet1: Optional[str] = Form(None),
-    sheet2: Optional[str] = Form(None),
-    session_id: Optional[str] = Cookie(None),
-    response: Response = None,
-):
-    if not session_id:
-        session_id = str(uuid.uuid4())
-        is_production = os.getenv('ENVIRONMENT', 'production').lower() == 'production'
-        response.set_cookie(
-            key="session_id",
-            value=session_id,
-            httponly=True,
-            samesite="lax",
-            secure=is_production,
-            max_age=86400,
-            path="/"
-        )
-    session_dir = TEMP_DIR / session_id
-    session_dir.mkdir(exist_ok=True)
-    temp_file1_path = session_dir / f"file1_{uuid.uuid4()}_{file1.filename}"
-    temp_file2_path = session_dir / f"file2_{uuid.uuid4()}_{file2.filename}"
+MAX_ROWS = 100000  # 🔥 safety limit
+
+
+@router.post("/process-file")
+async def process_file(file: UploadFile = File(...)):
+    temp_file_path = None
+
     try:
-        with open(temp_file1_path, "wb") as buffer:
-            shutil.copyfileobj(file1.file, buffer)
-        with open(temp_file2_path, "wb") as buffer:
-            shutil.copyfileobj(file2.file, buffer)
-        file1.file.seek(0)
-        file2.file.seek(0)
-        df1 = read_file(file1, sheet_name=sheet1)
-        df2 = read_file(file2, sheet_name=sheet2)
-        unnamed_cols_df1 = get_unnamed_columns(df1)
-        unnamed_cols_df2 = get_unnamed_columns(df2)
-        if (unnamed_cols_df1 or unnamed_cols_df2) and not remove_unnamed:
-            error_message = "Unnamed columns detected: "
-            if unnamed_cols_df1:
-                error_message += f"File '{file1.filename}' has unnamed columns at indexes {unnamed_cols_df1}. "
-            if unnamed_cols_df2:
-                error_message += f"File '{file2.filename}' has unnamed columns at indexes {unnamed_cols_df2}."
-            return JSONResponse(status_code=400, content={"error": error_message})
-        if remove_unnamed:
-            df1 = df1.loc[:, ~df1.columns.str.contains("^Unnamed")]
-            df2 = df2.loc[:, ~df2.columns.str.contains("^Unnamed")]
-        mismatched_cols = get_mismatched_columns(df1, df2)
-        if (
-            mismatched_cols["only_in_df1"] or mismatched_cols["only_in_df2"]
-        ) and not remove_mismatched:
-            error_message = "Mismatched columns detected: "
-            if mismatched_cols["only_in_df1"]:
-                error_message += f"Columns only in '{file1.filename}': {mismatched_cols['only_in_df1']}. "
-            if mismatched_cols["only_in_df2"]:
-                error_message += f"Columns only in '{file2.filename}': {mismatched_cols['only_in_df2']}."
-            return JSONResponse(status_code=400, content={"error": error_message})
-        if remove_mismatched:
-            common_columns = list(set(df1.columns) & set(df2.columns))
-            df1 = df1[common_columns]
-            df2 = df2[common_columns]
-        numeric_cols_df1 = df1.select_dtypes(include=[np.number]).columns
-        numeric_cols_df2 = df2.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols_df1) > 0:
-            df1[numeric_cols_df1] = df1[numeric_cols_df1].round(3)
-        if len(numeric_cols_df2) > 0:
-            df2[numeric_cols_df2] = df2[numeric_cols_df2].round(3)
-        
-        df1_clean = df1.copy(deep=False)
-        df2_clean = df2.copy(deep=False)
-        df1_clean = df1_clean.replace({np.nan: None, np.inf: None, -np.inf: None})
-        df2_clean = df2_clean.replace({np.nan: None, np.inf: None, -np.inf: None})
-        
-        session_data = {
-            "df1": df1,
-            "df2": df2,
-            "file1_name": file1.filename,
-            "file2_name": file2.filename,
-            "calculated_columns": [],
-        }
-        
-        if not create_session(session_id, session_data):
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Failed to create session. Please try again."}
+        print("📂 File received:", file.filename)
+
+        # ✅ Create temp directory
+        session_dir = TEMP_DIR / str(uuid.uuid4())
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_file_path = session_dir / f"{uuid.uuid4()}_{file.filename}"
+
+        # ✅ Save file
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        ext = file.filename.split(".")[-1].lower()
+        all_sheets_data = {}
+
+        # =========================
+        # ✅ HANDLE EXCEL FILES
+        # =========================
+        if ext in ["xlsx", "xls", "xlsm"]:
+            excel_file = pd.ExcelFile(temp_file_path)
+            sheets = excel_file.sheet_names
+
+            if not sheets:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "No sheets found"}
+                )
+
+            for sheet_name in sheets:
+                try:
+                    # 🔥 READ RAW (NO TYPE GUESSING, NO HEADER ASSUMPTIONS)
+                    df = pd.read_excel(
+                        excel_file,
+                        sheet_name=sheet_name,
+                        header=None,
+                        dtype=object
+                    )
+
+                    if df is None or df.empty:
+                        continue
+
+                    # 🔥 SAFETY LIMIT
+                    if len(df) > MAX_ROWS:
+                        return JSONResponse(
+                            status_code=400,
+                            content={
+                                "error": f"Sheet '{sheet_name}' too large ({len(df)} rows). Limit is {MAX_ROWS}."
+                            }
+                        )
+
+                    # =========================
+                    # 🔥 SAFE HEADER CREATION
+                    # =========================
+                    raw_header = df.iloc[0].tolist()
+
+                    clean_header = []
+                    for i, col in enumerate(raw_header):
+                        if pd.isna(col) or str(col).strip() == "":
+                            clean_header.append(f"Column_{i}")  # ✅ NEVER DROP
+                        else:
+                            clean_header.append(str(col).strip())
+
+                    df.columns = clean_header
+                    df = df[1:]
+                    df.reset_index(drop=True, inplace=True)
+
+                    # =========================
+                    # 🔥 REMOVE ONLY TRUE "Unnamed"
+                    # =========================
+                    unnamed_cols = get_unnamed_columns(df)
+                    if unnamed_cols:
+                        df = df.loc[:, ~df.columns.astype(str).str.contains("^Unnamed")]
+
+                    # =========================
+                    # 🔥 HANDLE DATES PROPERLY
+                    # =========================
+                    for col in df.columns:
+                        try:
+                            df[col] = pd.to_datetime(df[col], errors="ignore")
+                            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                                df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            pass
+
+                    # =========================
+                    # 🔥 ROUND NUMERIC VALUES
+                    # =========================
+                    numeric_cols = df.select_dtypes(include=[np.number]).columns
+                    if len(numeric_cols) > 0:
+                        df[numeric_cols] = df[numeric_cols].round(3)
+
+                    # =========================
+                    # 🔥 CLEAN NaN / INF
+                    # =========================
+                    df_clean = df.replace({
+                        np.nan: None,
+                        np.inf: None,
+                        -np.inf: None
+                    })
+
+                    # 🔍 DEBUG (keep for now)
+                    print(f"✅ {sheet_name} columns:", df.columns.tolist())
+
+                    # =========================
+                    # ✅ STORE DATA
+                    # =========================
+                    all_sheets_data[sheet_name] = {
+                        "columns": list(df.columns),
+                        "shape": df.shape,
+                        "data": df_clean.to_dict(orient="records")
+                    }
+
+                except Exception as sheet_error:
+                    print(f"⚠️ Error in sheet {sheet_name}:", str(sheet_error))
+
+        # =========================
+        # ✅ HANDLE CSV FILES
+        # =========================
+        elif ext == "csv":
+            df = pd.read_csv(
+                temp_file_path,
+                header=None,
+                dtype=object
             )
-        
-        preview1 = df1_clean.head(10).to_dict(orient="records")
-        preview2 = df2_clean.head(10).to_dict(orient="records")
-        
-        total_size_estimate = len(str(preview1)) + len(str(preview2))
-        if total_size_estimate > 5 * 1024 * 1024:
-            preview1 = df1_clean.head(5).to_dict(orient="records")
-            preview2 = df2_clean.head(5).to_dict(orient="records")
-        
+
+            if df is None or df.empty:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "CSV is empty"}
+                )
+
+            if len(df) > MAX_ROWS:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"CSV too large ({len(df)} rows). Limit is {MAX_ROWS}."}
+                )
+
+            # 🔥 SAFE HEADER
+            raw_header = df.iloc[0].tolist()
+
+            clean_header = []
+            for i, col in enumerate(raw_header):
+                if pd.isna(col) or str(col).strip() == "":
+                    clean_header.append(f"Column_{i}")
+                else:
+                    clean_header.append(str(col).strip())
+
+            df.columns = clean_header
+            df = df[1:]
+            df.reset_index(drop=True, inplace=True)
+
+            # 🔥 REMOVE ONLY TRUE "Unnamed"
+            unnamed_cols = get_unnamed_columns(df)
+            if unnamed_cols:
+                df = df.loc[:, ~df.columns.astype(str).str.contains("^Unnamed")]
+
+            # 🔥 HANDLE DATES
+            for col in df.columns:
+                try:
+                    df[col] = pd.to_datetime(df[col], errors="ignore")
+                    if pd.api.types.is_datetime64_any_dtype(df[col]):
+                        df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    pass
+
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                df[numeric_cols] = df[numeric_cols].round(3)
+
+            df_clean = df.replace({
+                np.nan: None,
+                np.inf: None,
+                -np.inf: None
+            })
+
+            all_sheets_data["csv"] = {
+                "columns": list(df.columns),
+                "shape": df.shape,
+                "data": df_clean.to_dict(orient="records")
+            }
+
+        # =========================
+        # ❌ UNSUPPORTED FILE
+        # =========================
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported file type: {ext}"}
+            )
+
+        # =========================
+        # ✅ FINAL RESPONSE
+        # =========================
         return {
-            "message": "Files processed successfully",
-            "session_id": session_id,
-            "file1_info": {
-                "filename": file1.filename,
-                "shape": df1.shape,
-                "columns": list(df1.columns),
-                "preview": preview1,
-                "data": preview1,
-            },
-            "file2_info": {
-                "filename": file2.filename,
-                "shape": df2.shape,
-                "columns": list(df2.columns),
-                "preview": preview2,
-                "data": preview2,
+            "message": "File processed successfully",
+            "file_info": {
+                "filename": file.filename,
+                "file_type": ext,
+                "sheets": list(all_sheets_data.keys()),
+                "sheets_data": all_sheets_data
             },
         }
+
     except Exception as e:
-        if temp_file1_path.exists():
-            temp_file1_path.unlink()
-        if temp_file2_path.exists():
-            temp_file2_path.unlink()
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        print("🔥 FULL ERROR:")
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except:
+                pass
