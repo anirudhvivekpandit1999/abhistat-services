@@ -52,17 +52,19 @@ async def process_file(file: UploadFile = File(...)):
                     status_code=400,
                     content={"error": "No sheets found"}
                 )
-
+            # read ALL sheets into memory first, then close
+            sheet_dataframes = {}
             for sheet_name in sheets:
+                sheet_dataframes[sheet_name] = pd.read_excel(
+                    excel_file,
+                    sheet_name=sheet_name,
+                    header=None,
+                    dtype=object
+                )
+            # NOW close the file so finally block can delete it
+            excel_file.close()
+            for sheet_name, df in sheet_dataframes.items():
                 try:
-                    # 🔥 READ RAW (NO TYPE GUESSING, NO HEADER ASSUMPTIONS)
-                    df = pd.read_excel(
-                        excel_file,
-                        sheet_name=sheet_name,
-                        header=None,
-                        dtype=object
-                    )
-
                     if df is None or df.empty:
                         continue
 
