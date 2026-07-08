@@ -10,7 +10,10 @@ import pandas as pd
 from core.config import TEMP_DIR
 from utils import get_unnamed_columns
 
-storage = {}
+from core.db import db
+import json
+
+jobs_collection = db['processing_jobs']
 
 router = APIRouter()
 
@@ -132,16 +135,20 @@ async def process_file(file: UploadFile = File(...)):
                     # =========================
                     records = df_clean.to_dict(orient="records")
                     job_id = str(uuid.uuid4())
-                    storage[job_id] = records  # save ALL rows
+                    jobs_collection.insert_one({
+                        "_id": job_id,
+                        "records": records,
+                        "created_at": pd.Timestamp.now().isoformat()
+                    })
 
                     all_sheets_data[sheet_name] = {
                         "columns": list(df.columns),
                         "shape": df.shape,
                         "total_rows": len(records),
                         "job_id": job_id,
-                        "data": records[:100],        # ✅ first 100 only
-                        "next_offset": 100 if len(records) > 100 else None,
-                        "done": len(records) <= 100
+                        "data": records[:10000],        # ✅ first 10000 only
+                        "next_offset": 10000 if len(records) > 10000 else None,
+                        "done": len(records) <= 10000
                     }
 
                 except Exception as sheet_error:
@@ -209,16 +216,20 @@ async def process_file(file: UploadFile = File(...)):
 
             records = df_clean.to_dict(orient="records")
             job_id = str(uuid.uuid4())
-            storage[job_id] = records
+            jobs_collection.insert_one({
+                "_id": job_id,
+                "records": records,
+                "created_at": pd.Timestamp.now().isoformat()
+            })
 
             all_sheets_data["csv"] = {
                 "columns": list(df.columns),
                 "shape": df.shape,
                 "total_rows": len(records),
                 "job_id": job_id,
-                "data": records[:100],
-                "next_offset": 100 if len(records) > 100 else None,
-                "done": len(records) <= 100
+                "data": records[:10000],
+                "next_offset": 10000 if len(records) > 10000 else None,
+                "done": len(records) <= 10000
             }
 
         # =========================
@@ -256,15 +267,19 @@ async def process_file(file: UploadFile = File(...)):
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.remove(temp_file_path)
+                session_folder = temp_file_path.parent
+                if session_folder.exists():
+                    shutil.rmtree(session_folder)
             except:
                 pass
 
 @router.get("/process-file")
 async def get_next_batch(job_id: str, offset: int = 0, limit: int = 100):
-    if job_id not in storage:
+    job = jobs_collection.find_one({"_id": job_id})
+    if not job:
         return JSONResponse(status_code=404, content={"error": "job_id not found"})
-    
-    records = storage[job_id]
+
+    records = job["records"]
     page = records[offset:offset + limit]
     next_offset = offset + limit
     
