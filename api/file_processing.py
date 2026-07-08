@@ -10,6 +10,8 @@ import pandas as pd
 from core.config import TEMP_DIR
 from utils import get_unnamed_columns
 
+storage = {}
+
 router = APIRouter()
 
 MAX_ROWS = 100000  # 🔥 safety limit
@@ -126,10 +128,18 @@ async def process_file(file: UploadFile = File(...)):
                     # =========================
                     # ✅ STORE DATA
                     # =========================
+                    records = df_clean.to_dict(orient="records")
+                    job_id = str(uuid.uuid4())
+                    storage[job_id] = records  # save ALL rows
+
                     all_sheets_data[sheet_name] = {
                         "columns": list(df.columns),
                         "shape": df.shape,
-                        "data": df_clean.to_dict(orient="records")
+                        "total_rows": len(records),
+                        "job_id": job_id,
+                        "data": records[:100],        # ✅ first 100 only
+                        "next_offset": 100 if len(records) > 100 else None,
+                        "done": len(records) <= 100
                     }
 
                 except Exception as sheet_error:
@@ -195,10 +205,18 @@ async def process_file(file: UploadFile = File(...)):
                 -np.inf: None
             })
 
+            records = df_clean.to_dict(orient="records")
+            job_id = str(uuid.uuid4())
+            storage[job_id] = records
+
             all_sheets_data["csv"] = {
                 "columns": list(df.columns),
                 "shape": df.shape,
-                "data": df_clean.to_dict(orient="records")
+                "total_rows": len(records),
+                "job_id": job_id,
+                "data": records[:100],
+                "next_offset": 100 if len(records) > 100 else None,
+                "done": len(records) <= 100
             }
 
         # =========================
@@ -238,3 +256,23 @@ async def process_file(file: UploadFile = File(...)):
                 os.remove(temp_file_path)
             except:
                 pass
+
+@router.get("/process-file")
+async def get_next_batch(job_id: str, offset: int = 0, limit: int = 100):
+    if job_id not in storage:
+        return JSONResponse(status_code=404, content={"error": "job_id not found"})
+    
+    records = storage[job_id]
+    page = records[offset:offset + limit]
+    next_offset = offset + limit
+    
+    return {
+        "job_id": job_id,
+        "offset": offset,
+        "limit": limit,
+        "count": len(page),
+        "total_rows": len(records),
+        "next_offset": next_offset if next_offset < len(records) else None,
+        "done": next_offset >= len(records),
+        "data": page
+    }
