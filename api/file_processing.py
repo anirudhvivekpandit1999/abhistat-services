@@ -100,9 +100,11 @@ async def process_file(file: UploadFile = File(...)):
                     # =========================
                     for col in df.columns:
                         try:
-                            df[col] = pd.to_datetime(df[col], errors="ignore")
-                            if pd.api.types.is_datetime64_any_dtype(df[col]):
-                                df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+                            # only convert if the column name suggests it's a date
+                            if any(word in col.lower() for word in ["date", "time", "dt"]):
+                                df[col] = pd.to_datetime(df[col], errors="ignore")
+                                if pd.api.types.is_datetime64_any_dtype(df[col]):
+                                    df[col] = df[col].dt.strftime("%Y-%m-%d %H:%M:%S")
                         except:
                             pass
 
