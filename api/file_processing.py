@@ -154,7 +154,9 @@ async def process_file(file: UploadFile = File(...)):
                     }
 
                 except Exception as sheet_error:
+                    import traceback
                     print(f"⚠️ Error in sheet {sheet_name}:", str(sheet_error))
+                    traceback.print_exc()
 
         # =========================
         # ✅ HANDLE CSV FILES
@@ -295,3 +297,5 @@ async def get_next_batch(job_id: str, offset: int = 0, limit: int = 100):
         "done": next_offset >= len(records),
         "data": page
     }
+
+# "0238b8e0-438c-425b-a6e5-ffcfc6b1db88"
