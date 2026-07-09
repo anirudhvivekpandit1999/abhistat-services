@@ -6,6 +6,7 @@ import numpy as np
 import os
 import traceback
 import pandas as pd
+import datetime
 
 from core.config import TEMP_DIR
 from utils import get_unnamed_columns
@@ -135,13 +136,32 @@ async def process_file(file: UploadFile = File(...)):
                     # =========================
                     # ✅ STORE DATA
                     # =========================
+                    def make_serializable(val):
+                        if isinstance(val, datetime.time):
+                            return val.strftime("%H:%M:%S")
+                        if isinstance(val, datetime.datetime):
+                            return val.isoformat()
+                        if isinstance(val, datetime.date):
+                            return val.isoformat()
+                        return val
+
                     records = df_clean.to_dict(orient="records")
+                    records = [
+                        {k: make_serializable(v) for k, v in row.items()}
+                        for row in records
+                    ]
                     job_id = str(uuid.uuid4())
-                    jobs_collection.insert_one({
-                        "_id": job_id,
-                        "records": records,
-                        "created_at": pd.Timestamp.now().isoformat()
-                    })
+                    # save in chunks of 1000 rows to avoid MongoDB 16MB limit
+                    chunk_size = 1000
+                    for chunk_index, i in enumerate(range(0, len(records), chunk_size)):
+                        chunk = records[i:i + chunk_size]
+                        jobs_collection.insert_one({
+                            "_id": f"{job_id}_{chunk_index}",
+                            "job_id": job_id,
+                            "chunk_index": chunk_index,
+                            "records": chunk,
+                            "created_at": pd.Timestamp.now().isoformat()
+                        })
 
                     all_sheets_data[sheet_name] = {
                         "columns": list(df.columns),
@@ -220,11 +240,17 @@ async def process_file(file: UploadFile = File(...)):
 
             records = df_clean.to_dict(orient="records")
             job_id = str(uuid.uuid4())
-            jobs_collection.insert_one({
-                "_id": job_id,
-                "records": records,
-                "created_at": pd.Timestamp.now().isoformat()
-            })
+            # save in chunks of 1000 rows to avoid MongoDB 16MB limit
+            chunk_size = 1000
+            for chunk_index, i in enumerate(range(0, len(records), chunk_size)):
+                chunk = records[i:i + chunk_size]
+                jobs_collection.insert_one({
+                    "_id": f"{job_id}_{chunk_index}",
+                    "job_id": job_id,
+                    "chunk_index": chunk_index,
+                    "records": chunk,
+                    "created_at": pd.Timestamp.now().isoformat()
+                })
 
             all_sheets_data["csv"] = {
                 "columns": list(df.columns),
@@ -278,24 +304,31 @@ async def process_file(file: UploadFile = File(...)):
                 pass
 
 @router.get("/process-file")
-async def get_next_batch(job_id: str, offset: int = 0, limit: int = 100):
-    job = jobs_collection.find_one({"_id": job_id})
-    if not job:
+async def get_next_batch(job_id: str, offset: int = 0, limit: int = 10000):
+    # get all chunks for this job, sorted by chunk_index
+    chunks = list(jobs_collection.find(
+        {"job_id": job_id},
+        sort=[("chunk_index", 1)]
+    ))
+    if not chunks:
         return JSONResponse(status_code=404, content={"error": "job_id not found"})
 
-    records = job["records"]
-    page = records[offset:offset + limit]
+    # reassemble all records from chunks
+    all_records = []
+    for chunk in chunks:
+        all_records.extend(chunk["records"])
+
+    page = all_records[offset:offset + limit]
     next_offset = offset + limit
-    
+
     return {
         "job_id": job_id,
         "offset": offset,
         "limit": limit,
         "count": len(page),
-        "total_rows": len(records),
-        "next_offset": next_offset if next_offset < len(records) else None,
-        "done": next_offset >= len(records),
+        "total_rows": len(all_records),
+        "next_offset": next_offset if next_offset < len(all_records) else None,
+        "done": next_offset >= len(all_records),
         "data": page
     }
 
-# "0238b8e0-438c-425b-a6e5-ffcfc6b1db88"
