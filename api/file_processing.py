@@ -12,14 +12,13 @@ from core.config import TEMP_DIR
 from utils import get_unnamed_columns
 
 from core.db import db
-import json
 
-jobs_collection = db['processing_jobs']
 
 router = APIRouter()
 
 MAX_ROWS = 100000  # 🔥 safety limit
 
+storage = {}
 
 @router.post("/process-file")
 async def process_file(file: UploadFile = File(...)):
@@ -151,17 +150,7 @@ async def process_file(file: UploadFile = File(...)):
                         for row in records
                     ]
                     job_id = str(uuid.uuid4())
-                    # save in chunks of 1000 rows to avoid MongoDB 16MB limit
-                    chunk_size = 1000
-                    for chunk_index, i in enumerate(range(0, len(records), chunk_size)):
-                        chunk = records[i:i + chunk_size]
-                        jobs_collection.insert_one({
-                            "_id": f"{job_id}_{chunk_index}",
-                            "job_id": job_id,
-                            "chunk_index": chunk_index,
-                            "records": chunk,
-                            "created_at": pd.Timestamp.now().isoformat()
-                        })
+                    storage[job_id] = records
 
                     all_sheets_data[sheet_name] = {
                         "columns": list(df.columns),
@@ -240,17 +229,8 @@ async def process_file(file: UploadFile = File(...)):
 
             records = df_clean.to_dict(orient="records")
             job_id = str(uuid.uuid4())
-            # save in chunks of 1000 rows to avoid MongoDB 16MB limit
-            chunk_size = 1000
-            for chunk_index, i in enumerate(range(0, len(records), chunk_size)):
-                chunk = records[i:i + chunk_size]
-                jobs_collection.insert_one({
-                    "_id": f"{job_id}_{chunk_index}",
-                    "job_id": job_id,
-                    "chunk_index": chunk_index,
-                    "records": chunk,
-                    "created_at": pd.Timestamp.now().isoformat()
-                })
+
+            storage[job_id] = records
 
             all_sheets_data["csv"] = {
                 "columns": list(df.columns),
@@ -294,31 +274,28 @@ async def process_file(file: UploadFile = File(...)):
         )
 
     finally:
+        print(f"🧹 Cleanup starting for: {temp_file_path}")
         if temp_file_path and os.path.exists(temp_file_path):
             try:
+                import gc
+                gc.collect()
                 os.remove(temp_file_path)
                 session_folder = temp_file_path.parent
                 if session_folder.exists():
                     shutil.rmtree(session_folder)
-            except:
-                pass
+                print("🧹 Cleanup successful")
+            except Exception as cleanup_error:
+                print(f"⚠️ Cleanup failed: {cleanup_error}")
+        else:
+            print("🧹 Nothing to clean up")
 
 @router.get("/process-file")
 async def get_next_batch(job_id: str, offset: int = 0, limit: int = 10000):
-    # get all chunks for this job, sorted by chunk_index
-    chunks = list(jobs_collection.find(
-        {"job_id": job_id},
-        sort=[("chunk_index", 1)]
-    ))
-    if not chunks:
+    if job_id not in storage:
         return JSONResponse(status_code=404, content={"error": "job_id not found"})
 
-    # reassemble all records from chunks
-    all_records = []
-    for chunk in chunks:
-        all_records.extend(chunk["records"])
-
-    page = all_records[offset:offset + limit]
+    records = storage[job_id]
+    page = records[offset:offset + limit]
     next_offset = offset + limit
 
     return {
@@ -326,9 +303,10 @@ async def get_next_batch(job_id: str, offset: int = 0, limit: int = 10000):
         "offset": offset,
         "limit": limit,
         "count": len(page),
-        "total_rows": len(all_records),
-        "next_offset": next_offset if next_offset < len(all_records) else None,
-        "done": next_offset >= len(all_records),
+        "total_rows": len(records),
+        "next_offset": next_offset if next_offset < len(records) else None,
+        "done": next_offset >= len(records),
         "data": page
     }
 
+#"773d0481-be1a-4787-a2ba-2c637cb953dc"
