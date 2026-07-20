@@ -143,12 +143,19 @@ async def process_file(file: UploadFile = File(...)):
                         if isinstance(val, datetime.date):
                             return val.isoformat()
                         return val
-
+                    # only convert columns that actually contain datetime values
+                    # instead of checking every single cell (much faster)
+                    for col in df_clean.columns:
+                        sample = df_clean[col].dropna()
+                        if not sample.empty and isinstance(sample.iloc[0], (datetime.time, datetime.datetime, datetime.date)):
+                            df_clean[col] = df_clean[col].apply(
+                                lambda v: make_serializable(v) if v is not None else v
+                            )
                     records = df_clean.to_dict(orient="records")
-                    records = [
-                        {k: make_serializable(v) for k, v in row.items()}
-                        for row in records
-                    ]
+                    # records = [
+                    #     {k: make_serializable(v) for k, v in row.items()}
+                    #     for row in records
+                    # ]
                     job_id = str(uuid.uuid4())
                     storage[job_id] = records
 
