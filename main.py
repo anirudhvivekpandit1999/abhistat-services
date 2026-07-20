@@ -52,7 +52,8 @@ app.add_middleware(
         "https://abhistat.com",
         "https://www.abhistat.com",
         "http://abhistat.com",
-        "http://www.abhistat.com"
+        "http://www.abhistat.com",
+        "http://91.203.132.34:5173"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
